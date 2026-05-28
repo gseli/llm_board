@@ -360,3 +360,45 @@ body::before {
 .note-response .response-content::-webkit-scrollbar { width: 4px; }
 .note-response .response-content::-webkit-scrollbar-track { background: transparent; }
 .note-response .response-content::-webkit-scrollbar-thumb { background: #3a3020; }
+
+/* ── Response footer + reply button ── */
+.note-footer {
+  padding: 8px 12px;
+  border-top: 1px solid rgba(212,200,150,0.12);
+  display: flex;
+  justify-content: flex-end;
+}
+
+.btn-reply {
+  background: transparent;
+  border: 1px solid var(--terminal-accent);
+  color: var(--terminal-accent);
+  font-family: 'Source Code Pro', monospace;
+  font-size: 0.72rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  padding: 5px 10px;
+  cursor: pointer;
+  transition: background 0.12s, color 0.12s;
+}
+.btn-reply:hover:not(:disabled) {
+  background: var(--terminal-accent);
+  color: var(--terminal-bg);
+}
+.btn-reply:disabled {
+  opacity: 0.3;
+  cursor: not-allowed;
+}
+
+/* ── Bloom's badge on prompt header ── */
+.bloom-badge {
+  font-family: 'Source Code Pro', monospace;
+  font-size: 0.65rem;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  color: var(--ink-soft);
+  opacity: 0.75;
+  margin-right: 6px;
+  white-space: nowrap;
+}

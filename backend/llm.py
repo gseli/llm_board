@@ -4,7 +4,7 @@ import httpx
 
 class LLMProvider(ABC):
     @abstractmethod
-    async def complete(self, prompt: str) -> str:
+    async def complete(self, messages: list[dict]) -> str:
         pass
 
 
@@ -14,15 +14,12 @@ class MistralProvider(LLMProvider):
         self.model = model
         self.base_url = "https://api.mistral.ai/v1"
 
-    async def complete(self, prompt: str) -> str:
+    async def complete(self, messages: list[dict]) -> str:
         headers = {
             "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json",
         }
-        payload = {
-            "model": self.model,
-            "messages": [{"role": "user", "content": prompt}],
-        }
+        payload = {"model": self.model, "messages": messages}
         async with httpx.AsyncClient(timeout=60) as client:
             response = await client.post(
                 f"{self.base_url}/chat/completions",
@@ -40,15 +37,12 @@ class GroqProvider(LLMProvider):
         self.model = model
         self.base_url = "https://api.groq.com/openai/v1"
 
-    async def complete(self, prompt: str) -> str:
+    async def complete(self, messages: list[dict]) -> str:
         headers = {
             "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json",
         }
-        payload = {
-            "model": self.model,
-            "messages": [{"role": "user", "content": prompt}],
-        }
+        payload = {"model": self.model, "messages": messages}
         async with httpx.AsyncClient(timeout=60) as client:
             response = await client.post(
                 f"{self.base_url}/chat/completions",
@@ -65,14 +59,19 @@ class GeminiProvider(LLMProvider):
         self.api_key = api_key
         self.model = model
 
-    async def complete(self, prompt: str) -> str:
+    async def complete(self, messages: list[dict]) -> str:
+        # Convert OpenAI-style messages to Gemini format
+        contents = []
+        for m in messages:
+            role = "model" if m["role"] == "assistant" else "user"
+            contents.append({"role": role, "parts": [{"text": m["content"]}]})
+
         url = f"https://generativelanguage.googleapis.com/v1beta/models/{self.model}:generateContent"
-        payload = {"contents": [{"parts": [{"text": prompt}]}]}
         async with httpx.AsyncClient(timeout=60) as client:
             response = await client.post(
                 url,
                 params={"key": self.api_key},
-                json=payload,
+                json={"contents": contents},
             )
             response.raise_for_status()
             data = response.json()

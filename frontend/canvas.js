@@ -1,6 +1,4 @@
 const BOARD_NAME = "default";
-const NOTE_HEIGHT_ESTIMATE = 220;
-const NOTE_GAP = 20;
 
 let notes = [];
 let saveTimer = null;
@@ -55,15 +53,17 @@ function addNote(type, extra = {}) {
     content: "",
     prompt_template: "explain_term",
     parent_id: null,
+    thread_id: null,
+    conversation_context: null,
+    conversation: null,
     ...extra,
   };
   notes.push(note);
-  renderNote(note);
   scheduleSave();
+  return note;
 }
 
 function deleteNote(id) {
-  // also delete any response children
   const children = notes.filter((n) => n.parent_id === id);
   children.forEach((c) => deleteNote(c.id));
   notes = notes.filter((n) => n.id !== id);
@@ -78,10 +78,55 @@ function updateNote(id, fields) {
   scheduleSave();
 }
 
+// ── Conversation history ──────────────────────────────────────
+
+function buildHistory(responseNoteId) {
+  // Walk chain upward collecting messages, then reverse to oldest→newest
+  const messages = [];
+  let current = notes.find((n) => n.id === responseNoteId);
+
+  while (current) {
+    if (current.type === "response" && current.content) {
+      messages.unshift({ role: "assistant", content: current.content });
+    } else if (current.type === "prompt" && current.content) {
+      // Reconstruct what was actually sent for this prompt
+      const tpl = TEMPLATES.find((t) => t.id === (current.prompt_template || "explain_term")) || TEMPLATES[0];
+      messages.unshift({ role: "user", content: tpl.build(current.content.trim() || "this concept") });
+    }
+    current = current.parent_id ? notes.find((n) => n.id === current.parent_id) : null;
+  }
+
+  return messages;
+}
+
+function replyToResponse(responseNoteId) {
+  const responseNote = notes.find((n) => n.id === responseNoteId);
+  if (!responseNote) return;
+
+  // Don't allow reply while response is loading
+  if (responseNote.loading) return;
+
+  // Don't allow a second follow-up if one already exists
+  const alreadyHasFollowUp = notes.some((n) => n.parent_id === responseNoteId && n.type === "prompt");
+  if (alreadyHasFollowUp) return;
+
+  const history = buildHistory(responseNoteId);
+  const threadId = responseNote.thread_id || responseNote.parent_id;
+
+  addNote("prompt", {
+    parent_id: responseNoteId,
+    thread_id: threadId,
+    conversation_context: history,
+    x: responseNote.x,
+    y: 0, // position managed by renderChain
+  });
+
+  renderAll();
+}
+
 // ── Prompt execution ─────────────────────────────────────────
 
 async function runPrompt(parentId, builtPrompt) {
-  // Remove existing response child if any
   const existing = notes.find((n) => n.parent_id === parentId && n.type === "response");
   if (existing) {
     notes = notes.filter((n) => n.id !== existing.id);
@@ -90,45 +135,42 @@ async function runPrompt(parentId, builtPrompt) {
   const parent = notes.find((n) => n.id === parentId);
   if (!parent) return;
 
+  // Build messages: history context + new user message
+  const messages = [
+    ...(parent.conversation_context || []),
+    { role: "user", content: builtPrompt },
+  ];
+
   const responseNote = {
     id: generateId(),
     type: "response",
     x: parent.x,
-    y: parent.y + NOTE_HEIGHT_ESTIMATE + NOTE_GAP,
+    y: 0, // managed by renderChain
     content: "",
     parent_id: parentId,
+    thread_id: parent.thread_id || parentId,
+    conversation: null,
     loading: true,
   };
   notes.push(responseNote);
   renderAll();
 
-  // Disable run button while loading
-  const parentEl = canvas.querySelector(`[data-id="${parentId}"]`);
-  if (parentEl) {
-    const btn = parentEl.querySelector(".btn-run");
-    if (btn) btn.disabled = true;
-  }
-
   try {
     const res = await fetch("/prompt", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ prompt: builtPrompt }),
+      body: JSON.stringify({ messages }),
     });
     const data = await res.json();
     if (!res.ok) throw new Error(data.detail || "Unknown error");
     responseNote.content = data.response;
+    responseNote.conversation = [...messages, { role: "assistant", content: data.response }];
   } catch (err) {
     responseNote.content = `Error: ${err.message}`;
   } finally {
     responseNote.loading = false;
     renderAll();
     scheduleSave();
-    const parentEl2 = canvas.querySelector(`[data-id="${parentId}"]`);
-    if (parentEl2) {
-      const btn = parentEl2.querySelector(".btn-run");
-      if (btn) btn.disabled = false;
-    }
   }
 }
 
@@ -136,60 +178,59 @@ async function runPrompt(parentId, builtPrompt) {
 
 function renderAll() {
   canvas.innerHTML = "";
-  // Render text notes standalone
+
+  // Render standalone text notes
   notes.filter((n) => n.type === "text").forEach((note) => {
-    const el = createNoteElement(note, deleteNote, runPrompt, updateNote);
+    const el = createNoteElement(note, deleteNote, runPrompt, updateNote, null);
     makeDraggable(el, note);
     canvas.appendChild(el);
   });
-  // Render prompt notes as groups (prompt + optional connector + response)
-  notes.filter((n) => n.type === "prompt").forEach((note) => {
-    renderPromptGroup(note);
-  });
+
+  // Render root prompt notes as chains (prompt nodes with no prompt parent)
+  notes
+    .filter((n) => n.type === "prompt" && !notes.some((p) => p.id === n.parent_id && p.type === "response"))
+    .forEach((note) => renderChain(note));
 }
 
-function renderNote(note) {
-  if (note.type === "prompt") {
-    renderPromptGroup(note);
-  } else if (note.type === "text") {
-    const el = createNoteElement(note, deleteNote, runPrompt, updateNote);
-    makeDraggable(el, note);
-    canvas.appendChild(el);
-  }
-  // response notes are rendered inside renderPromptGroup, never standalone
-}
-
-function renderPromptGroup(promptNote) {
+function renderChain(rootPrompt) {
   const group = document.createElement("div");
-  group.dataset.groupId = promptNote.id;
+  group.dataset.groupId = rootPrompt.id;
   group.style.position = "absolute";
-  group.style.left = `${promptNote.x}px`;
-  group.style.top = `${promptNote.y}px`;
+  group.style.left = `${rootPrompt.x}px`;
+  group.style.top = `${rootPrompt.y}px`;
   group.style.display = "flex";
   group.style.flexDirection = "column";
 
-  const promptEl = createNoteElement(promptNote, deleteNote, runPrompt, updateNote);
-  promptEl.style.left = "";
-  promptEl.style.top = "";
-  promptEl.style.position = "relative";
-  attachResize(promptEl, promptNote);
-  group.appendChild(promptEl);
+  let current = rootPrompt;
+  let isFirst = true;
 
-  const child = notes.find((n) => n.parent_id === promptNote.id && n.type === "response");
-  if (child) {
-    const connector = document.createElement("div");
-    connector.className = "note-connector";
-    group.appendChild(connector);
+  while (current) {
+    const el = createNoteElement(current, deleteNote, runPrompt, updateNote, replyToResponse);
+    el.style.left = "";
+    el.style.top = "";
+    el.style.position = "relative";
 
-    const responseEl = createNoteElement(child, deleteNote, runPrompt, updateNote);
-    responseEl.style.left = "";
-    responseEl.style.top = "";
-    responseEl.style.position = "relative";
-    attachResize(responseEl, child);
-    group.appendChild(responseEl);
+    if (isFirst) {
+      // Only root prompt header triggers drag for whole group
+      makeDraggableGroup(group, rootPrompt);
+      isFirst = false;
+    }
+
+    attachResize(el, current);
+    group.appendChild(el);
+
+    // Find child: response of this prompt, or follow-up prompt of this response
+    const child = notes.find((n) => n.parent_id === current.id);
+    if (child) {
+      const connector = document.createElement("div");
+      connector.className = "note-connector";
+      group.appendChild(connector);
+      current = child;
+    } else {
+      current = null;
+    }
   }
 
-  makeDraggableGroup(group, promptNote);
   canvas.appendChild(group);
 }
 
@@ -215,10 +256,12 @@ function makeDraggableGroup(groupEl, promptNote) {
 }
 
 function attachDrag(handle, container, note, onMove) {
+  if (!handle) return;
   let startX, startY, origX, origY;
 
   handle.addEventListener("mousedown", (e) => {
     if (e.target.classList.contains("btn-delete")) return;
+    if (e.target.classList.contains("btn-reply")) return;
     e.preventDefault();
     startX = e.clientX;
     startY = e.clientY;
@@ -273,8 +316,14 @@ function attachResize(el, note) {
 
 // ── Toolbar buttons ───────────────────────────────────────────
 
-document.getElementById("btn-new-text").addEventListener("click", () => addNote("text"));
-document.getElementById("btn-new-prompt").addEventListener("click", () => addNote("prompt"));
+document.getElementById("btn-new-text").addEventListener("click", () => {
+  const note = addNote("text");
+  renderAll();
+});
+document.getElementById("btn-new-prompt").addEventListener("click", () => {
+  const note = addNote("prompt");
+  renderAll();
+});
 
 // ── MMB pan ───────────────────────────────────────────────────
 
@@ -306,7 +355,6 @@ document.getElementById("btn-new-prompt").addEventListener("click", () => addNot
     container.style.cursor = "";
   });
 
-  // prevent the browser's default middle-click scroll autoscroll indicator
   container.addEventListener("auxclick", (e) => {
     if (e.button === 1) e.preventDefault();
   });

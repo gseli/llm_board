@@ -1,0 +1,14 @@
+provider: mistral   # or groq, gemini
+
+mistral:
+  api_key: YOUR_MISTRAL_API_KEY_HERE
+  model: mistral-small-latest
+  # Other options: mistral-medium-latest, mistral-large-latest
+
+# groq:
+#   api_key: YOUR_GROQ_API_KEY_HERE
+#   model: llama3-8b-8192
+
+# gemini:
+#   api_key: YOUR_GEMINI_API_KEY_HERE
+#   model: gemini-1.5-flash

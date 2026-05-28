@@ -3,6 +3,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 from pathlib import Path
+from typing import Optional
 
 from config import load_config
 from llm import get_provider
@@ -14,7 +15,8 @@ FRONTEND_DIR = Path(__file__).parent.parent / "frontend"
 
 
 class PromptRequest(BaseModel):
-    prompt: str
+    prompt: Optional[str] = None
+    messages: Optional[list] = None  # [{role, content}, ...]
 
 
 class BoardData(BaseModel):
@@ -39,8 +41,16 @@ async def run_prompt(req: PromptRequest):
         provider = get_provider(config)
     except ValueError as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+    if req.messages:
+        messages = req.messages
+    elif req.prompt:
+        messages = [{"role": "user", "content": req.prompt}]
+    else:
+        raise HTTPException(status_code=400, detail="Either prompt or messages required")
+
     try:
-        result = await provider.complete(req.prompt)
+        result = await provider.complete(messages)
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"LLM error: {e}")
     return {"response": result}
