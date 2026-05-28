@@ -210,14 +210,14 @@ function renderChain(rootPrompt) {
     el.style.top = "";
     el.style.position = "relative";
 
+    attachResize(el, current);
+    group.appendChild(el);
+
     if (isFirst) {
-      // Only root prompt header triggers drag for whole group
+      // Wire drag after the first card is in the DOM so querySelector finds the header
       makeDraggableGroup(group, rootPrompt);
       isFirst = false;
     }
-
-    attachResize(el, current);
-    group.appendChild(el);
 
     // Find child: response of this prompt, or follow-up prompt of this response
     const child = notes.find((n) => n.parent_id === current.id);
