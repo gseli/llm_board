@@ -28,18 +28,31 @@ const TEMPLATES = [
   },
 ];
 
+function makeResizeHandle() {
+  const handle = document.createElement("div");
+  handle.className = "resize-handle";
+  return handle;
+}
+
+function applyNoteSize(el, note) {
+  if (note.width)  el.style.width  = `${note.width}px`;
+  if (note.height) el.style.height = `${note.height}px`;
+}
+
 function createNoteElement(note, onDelete, onPromptRun, onContentChange) {
   const el = document.createElement("div");
   el.className = `note note-${note.type}`;
   el.dataset.id = note.id;
   el.style.left = `${note.x}px`;
   el.style.top = `${note.y}px`;
+  applyNoteSize(el, note);
 
   // response cards are visually attached below their parent via CSS stacking —
   // they don't get a tape strip, just the terminal inner card
   if (note.type === "response") {
     const inner = document.createElement("div");
     inner.className = "note-inner";
+    inner.style.height = "100%";
 
     const header = document.createElement("div");
     header.className = "note-header";
@@ -54,12 +67,14 @@ function createNoteElement(note, onDelete, onPromptRun, onContentChange) {
     body.appendChild(content);
     inner.appendChild(body);
     el.appendChild(inner);
+    el.appendChild(makeResizeHandle());
     return el;
   }
 
   // Text + Prompt notes get tape strip (::before) + note-inner wrapper
   const inner = document.createElement("div");
   inner.className = "note-inner";
+  inner.style.height = "100%";
 
   const typeLabel = note.type === "text" ? "text note" : "prompt";
 
@@ -83,11 +98,14 @@ function createNoteElement(note, onDelete, onPromptRun, onContentChange) {
 
   const body = document.createElement("div");
   body.className = "note-body";
+  body.style.flex = "1";
+  body.style.overflow = "hidden";
 
   if (note.type === "text") {
     const ta = document.createElement("textarea");
     ta.placeholder = "Write something…";
     ta.value = note.content || "";
+    ta.style.height = "100%";
     ta.addEventListener("input", () => onContentChange(note.id, { content: ta.value }));
     body.appendChild(ta);
 
@@ -125,5 +143,6 @@ function createNoteElement(note, onDelete, onPromptRun, onContentChange) {
 
   inner.appendChild(body);
   el.appendChild(inner);
+  el.appendChild(makeResizeHandle());
   return el;
 }

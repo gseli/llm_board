@@ -1,0 +1,10 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(pip install *)",
+      "Bash(uvicorn main:app --host 127.0.0.1 --port 8765)",
+      "Bash(curl -s http://127.0.0.1:8765/board/default)",
+      "Bash(kill %1)"
+    ]
+  }
+}

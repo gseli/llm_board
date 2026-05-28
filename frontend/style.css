@@ -125,9 +125,25 @@ body::before {
 .note {
   position: absolute;
   width: 290px;
+  min-width: 200px;
   display: flex;
   flex-direction: column;
 }
+
+.resize-handle {
+  position: absolute;
+  bottom: 0;
+  right: 0;
+  width: 20px;
+  height: 20px;
+  cursor: se-resize;
+  z-index: 20;
+  pointer-events: all;
+  background: linear-gradient(135deg, transparent 50%, var(--ink-soft) 50%);
+  opacity: 0.25;
+  transition: opacity 0.15s;
+}
+.resize-handle:hover { opacity: 0.7; }
 
 /* tape strip on every card */
 .note::before {
@@ -152,6 +168,7 @@ body::before {
   flex-direction: column;
   overflow: hidden;
   transition: box-shadow 0.12s;
+  flex: 1;
 }
 .note:hover .note-inner { box-shadow: 5px 5px 0 var(--ink); }
 
@@ -198,7 +215,7 @@ body::before {
   color: var(--ink);
   font-family: 'Lora', Georgia, serif;
   font-size: 0.88rem;
-  resize: vertical;
+  resize: none;
   outline: none;
   line-height: 1.55;
 }
@@ -216,7 +233,7 @@ body::before {
   color: var(--ink);
   font-family: 'Lora', Georgia, serif;
   font-size: 0.88rem;
-  resize: vertical;
+  resize: none;
   outline: none;
   padding: 7px 9px;
   line-height: 1.5;

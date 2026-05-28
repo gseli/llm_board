@@ -169,10 +169,10 @@ function renderPromptGroup(promptNote) {
   group.style.flexDirection = "column";
 
   const promptEl = createNoteElement(promptNote, deleteNote, runPrompt, updateNote);
-  // position within group, not canvas
   promptEl.style.left = "";
   promptEl.style.top = "";
   promptEl.style.position = "relative";
+  attachResize(promptEl, promptNote);
   group.appendChild(promptEl);
 
   const child = notes.find((n) => n.parent_id === promptNote.id && n.type === "response");
@@ -185,6 +185,7 @@ function renderPromptGroup(promptNote) {
     responseEl.style.left = "";
     responseEl.style.top = "";
     responseEl.style.position = "relative";
+    attachResize(responseEl, child);
     group.appendChild(responseEl);
   }
 
@@ -201,6 +202,7 @@ function makeDraggable(el, note) {
     el.style.left = `${x}px`;
     el.style.top = `${y}px`;
   });
+  attachResize(el, note);
 }
 
 function makeDraggableGroup(groupEl, promptNote) {
@@ -238,10 +240,77 @@ function attachDrag(handle, container, note, onMove) {
   });
 }
 
+function attachResize(el, note) {
+  const handle = el.querySelector(".resize-handle");
+  if (!handle) return;
+
+  handle.addEventListener("mousedown", (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+
+    const startX = e.clientX;
+    const startY = e.clientY;
+    const origW = el.offsetWidth;
+    const origH = el.offsetHeight;
+
+    function move(e) {
+      const newW = Math.max(200, origW + (e.clientX - startX));
+      const newH = Math.max(120, origH + (e.clientY - startY));
+      el.style.width  = `${newW}px`;
+      el.style.height = `${newH}px`;
+    }
+    function up() {
+      note.width  = el.offsetWidth;
+      note.height = el.offsetHeight;
+      document.removeEventListener("mousemove", move);
+      document.removeEventListener("mouseup", up);
+      scheduleSave();
+    }
+    document.addEventListener("mousemove", move);
+    document.addEventListener("mouseup", up);
+  });
+}
+
 // ── Toolbar buttons ───────────────────────────────────────────
 
 document.getElementById("btn-new-text").addEventListener("click", () => addNote("text"));
 document.getElementById("btn-new-prompt").addEventListener("click", () => addNote("prompt"));
+
+// ── MMB pan ───────────────────────────────────────────────────
+
+(function initPan() {
+  const container = document.getElementById("canvas-container");
+  let panning = false;
+  let startX, startY, scrollX, scrollY;
+
+  container.addEventListener("mousedown", (e) => {
+    if (e.button !== 1) return;
+    e.preventDefault();
+    panning = true;
+    startX = e.clientX;
+    startY = e.clientY;
+    scrollX = container.scrollLeft;
+    scrollY = container.scrollTop;
+    container.style.cursor = "grabbing";
+  });
+
+  window.addEventListener("mousemove", (e) => {
+    if (!panning) return;
+    container.scrollLeft = scrollX - (e.clientX - startX);
+    container.scrollTop  = scrollY - (e.clientY - startY);
+  });
+
+  window.addEventListener("mouseup", (e) => {
+    if (e.button !== 1) return;
+    panning = false;
+    container.style.cursor = "";
+  });
+
+  // prevent the browser's default middle-click scroll autoscroll indicator
+  container.addEventListener("auxclick", (e) => {
+    if (e.button === 1) e.preventDefault();
+  });
+})();
 
 // ── Boot ──────────────────────────────────────────────────────
 
