@@ -24,3 +24,6 @@ Thumbs.db
 
 # JS tooling (if ever added)
 node_modules/
+
+# docs 
+docs/
