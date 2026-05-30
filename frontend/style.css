@@ -107,6 +107,47 @@ body::before {
 #save-status.saving { color: #b08030; }
 #save-status.saved  { color: #4a7a3a; }
 
+/* ── Undo affordance ── */
+#undo-slot {
+  display: none;
+  align-items: center;
+  gap: 8px;
+}
+#undo-slot.visible { display: inline-flex; }
+
+#undo-slot .undo-label {
+  font-family: 'Source Code Pro', monospace;
+  font-size: 0.7rem;
+  color: var(--ink-soft);
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+#undo-slot .btn-undo {
+  font-family: 'Source Code Pro', 'Courier New', monospace;
+  font-size: 0.72rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  padding: 5px 11px;
+  border: 1.5px solid var(--ink);
+  background: var(--paper);
+  color: var(--ink);
+  box-shadow: 2px 2px 0 var(--ink);
+  cursor: pointer;
+  transition: transform 0.1s, box-shadow 0.1s, background 0.12s, color 0.12s;
+}
+#undo-slot .btn-undo:hover {
+  background: var(--ink);
+  color: var(--paper);
+  transform: translate(-1px, -1px);
+  box-shadow: 3px 3px 0 var(--ink);
+}
+#undo-slot .btn-undo:active {
+  transform: translate(1px, 1px);
+  box-shadow: 1px 1px 0 var(--ink);
+}
+
 /* ── Canvas ── */
 #canvas-container {
   flex: 1;
