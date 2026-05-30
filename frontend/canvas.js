@@ -34,6 +34,26 @@ function setSaveStatus(state) {
   saveStatus.textContent = state === "saving" ? "Saving…" : state === "saved" ? "Saved" : "";
 }
 
+// ── Undo affordance ───────────────────────────────────────────
+
+const undoSlot = document.getElementById("undo-slot");
+
+// Renders the undo affordance from the current stack depth. Visible while the
+// stack is non-empty; no timeout — undo stays available until the stack drains
+// (or the page reloads).
+function showUndo() {
+  const depth = undoStack.length;
+  if (depth === 0) {
+    undoSlot.classList.remove("visible");
+    undoSlot.innerHTML = "";
+    return;
+  }
+  const label = depth > 1 ? `${depth} undos` : "Deleted";
+  undoSlot.innerHTML = `<span class="undo-label">${label}</span><button class="btn-undo">↶ undo</button>`;
+  undoSlot.classList.add("visible");
+  undoSlot.querySelector(".btn-undo").addEventListener("click", undoDelete);
+}
+
 // ── Note management ──────────────────────────────────────────
 
 function generateId() {
@@ -63,10 +83,39 @@ function addNote(type, extra = {}) {
   return note;
 }
 
+// Each entry is one deletion's full subtree (root + descendants). Newest last;
+// undo pops the most recent. Capped at UNDO_LIMIT — oldest dropped past the cap.
+const undoStack = [];
+const UNDO_LIMIT = 10;
+
 function deleteNote(id) {
-  const children = notes.filter((n) => n.parent_id === id);
-  children.forEach((c) => deleteNote(c.id));
-  notes = notes.filter((n) => n.id !== id);
+  // Collect the whole subtree (root + descendants) before mutating `notes`,
+  // so undo restores it as one unit rather than orphaned fragments.
+  const removed = [];
+  (function collect(targetId) {
+    const note = notes.find((n) => n.id === targetId);
+    if (!note) return;
+    removed.push(note);
+    notes.filter((n) => n.parent_id === targetId).forEach((c) => collect(c.id));
+  })(id);
+  if (!removed.length) return;
+
+  const removedIds = new Set(removed.map((n) => n.id));
+  notes = notes.filter((n) => !removedIds.has(n.id));
+
+  undoStack.push(removed);
+  if (undoStack.length > UNDO_LIMIT) undoStack.shift();
+  showUndo();
+
+  renderAll();
+  scheduleSave();
+}
+
+function undoDelete() {
+  const removed = undoStack.pop();
+  if (!removed) return;
+  notes.push(...removed);
+  showUndo();
   renderAll();
   scheduleSave();
 }
