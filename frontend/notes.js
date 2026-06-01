@@ -25,6 +25,19 @@ const TEMPLATES = [
   { id: "test_my_understanding", bloom: "evaluate",    label: "Test my understanding",   build: (i) => `I think I understand "${i}". Ask me 2–3 short questions to test whether I really do, then tell me what I should focus on.` },
 ];
 
+// Deepen moves — shown on FOLLOW-UP prompts (a prompt whose parent is a response).
+// These are evidence-backed depth scaffolds (self-explanation g≈0.55, elaborative
+// interrogation d≈0.56, curiosity/knowledge-gap), not Bloom's levels. The follow-up
+// is where depth happens in Socratic dialogue; the root prompt keeps the term-framing
+// TEMPLATES. `build(input)` takes the user's optional "specific angle" text; an empty
+// input still yields a sensible prompt because the full chain history travels with it.
+const DEEPEN_MOVES = [
+  { id: "why",        label: "Why is this so?",            build: (i) => i ? `Why is this true, specifically regarding ${i}? Explain the underlying reason or mechanism.` : `Why is this true? Explain the underlying reason or mechanism, not just the what.` },
+  { id: "explain_back", label: "Let me explain it back",    build: (i) => i ? `Here is my own explanation: "${i}". Check it — what did I get right, and where am I fuzzy or wrong?` : `I'll explain this back in my own words so you can check my understanding. Ask me to explain the key idea, then tell me where I'm fuzzy or wrong.` },
+  { id: "gap",        label: "What don't I understand yet?", build: (i) => i ? `Given what we've covered and my focus on ${i}, what important gaps remain in my understanding? Name 2–3 things I haven't grasped yet and why they matter.` : `What important gaps remain in my understanding of this so far? Name 2–3 things I haven't grasped yet and why they matter.` },
+  { id: "deeper",     label: "One layer deeper",           build: (i) => i ? `Go one layer deeper on ${i}: the mechanism or detail beneath what we just covered.` : `Go one layer deeper than the explanation so far — the mechanism or detail beneath it.` },
+];
+
 function makeResizeHandle() {
   const handle = document.createElement("div");
   handle.className = "resize-handle";
@@ -92,20 +105,22 @@ function createNoteElement(note, onDelete, onPromptRun, onContentChange, onReply
   inner.className = "note-inner";
   inner.style.height = "100%";
 
+  // A prompt whose parent is a response is a FOLLOW-UP → deepen-move UI, not Bloom's.
+  const isFollowUp = note.type === "prompt" && !!note.parent_id;
   const bloom = getBloomForTemplate(note.prompt_template || "explain_term");
 
   const header = document.createElement("div");
   header.className = "note-header";
-  if (note.type === "prompt") {
+  if (note.type === "prompt" && !isFollowUp) {
     header.style.background = bloom.tint;
   }
 
   const labelSpan = document.createElement("span");
   labelSpan.className = "note-label";
-  labelSpan.textContent = note.type === "text" ? "text note" : "prompt";
+  labelSpan.textContent = note.type === "text" ? "text note" : isFollowUp ? "deepen" : "prompt";
   header.appendChild(labelSpan);
 
-  if (note.type === "prompt") {
+  if (note.type === "prompt" && !isFollowUp) {
     const badge = document.createElement("span");
     badge.className = "bloom-badge";
     badge.textContent = `${bloom.symbol} ${bloom.label}`;
@@ -135,6 +150,35 @@ function createNoteElement(note, onDelete, onPromptRun, onContentChange, onReply
     ta.style.height = "100%";
     ta.addEventListener("input", () => onContentChange(note.id, { content: ta.value }));
     body.appendChild(ta);
+
+  } else if (note.type === "prompt" && isFollowUp) {
+    // Follow-up: choose a deepen move; the textarea is an OPTIONAL specific angle.
+    const ta = document.createElement("textarea");
+    ta.placeholder = "Anything specific? (optional)";
+    ta.value = note.content || "";
+    ta.addEventListener("input", () => onContentChange(note.id, { content: ta.value }));
+
+    const sel = document.createElement("select");
+    DEEPEN_MOVES.forEach((m) => {
+      const opt = document.createElement("option");
+      opt.value = m.id;
+      opt.textContent = m.label;
+      if (m.id === (note.prompt_template || DEEPEN_MOVES[0].id)) opt.selected = true;
+      sel.appendChild(opt);
+    });
+    sel.addEventListener("change", () => onContentChange(note.id, { prompt_template: sel.value }));
+
+    const runBtn = document.createElement("button");
+    runBtn.className = "btn-run";
+    runBtn.textContent = "Deepen ▶";
+    runBtn.addEventListener("click", () => {
+      const move = DEEPEN_MOVES.find((m) => m.id === sel.value) || DEEPEN_MOVES[0];
+      onPromptRun(note.id, move.build(ta.value.trim()));
+    });
+
+    body.appendChild(ta);
+    body.appendChild(sel);
+    body.appendChild(runBtn);
 
   } else if (note.type === "prompt") {
     const ta = document.createElement("textarea");

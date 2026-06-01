@@ -141,10 +141,20 @@ function buildHistory(responseNoteId) {
   while (current) {
     if (current.type === "response" && current.content) {
       messages.unshift({ role: "assistant", content: current.content });
-    } else if (current.type === "prompt" && current.content) {
-      // Reconstruct what was actually sent for this prompt
-      const tpl = TEMPLATES.find((t) => t.id === (current.prompt_template || "explain_term")) || TEMPLATES[0];
-      messages.unshift({ role: "user", content: tpl.build(current.content.trim() || "this concept") });
+    } else if (current.type === "prompt") {
+      // Reconstruct what was actually sent for this prompt. A follow-up (parent is a
+      // response) used a DEEPEN_MOVES move; a root prompt used a Bloom's TEMPLATE.
+      const text = (current.content || "").trim();
+      const isFollowUp = !!current.parent_id;
+      let built;
+      if (isFollowUp) {
+        const move = DEEPEN_MOVES.find((m) => m.id === current.prompt_template) || DEEPEN_MOVES[0];
+        built = move.build(text);
+      } else if (text) {
+        const tpl = TEMPLATES.find((t) => t.id === (current.prompt_template || "explain_term")) || TEMPLATES[0];
+        built = tpl.build(text);
+      }
+      if (built) messages.unshift({ role: "user", content: built });
     }
     current = current.parent_id ? notes.find((n) => n.id === current.parent_id) : null;
   }
