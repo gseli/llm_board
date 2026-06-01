@@ -3,6 +3,10 @@ const BOARD_NAME = "default";
 let notes = [];
 let saveTimer = null;
 
+// Focus mode is view-only state — never persisted to `notes` / board JSON.
+let focusMode = false;     // dim every group except the active one?
+let activeGroupId = null;  // dataset id of the focused group (chain root id, or a text note id)
+
 const canvas = document.getElementById("canvas");
 const saveStatus = document.getElementById("save-status");
 
@@ -232,6 +236,8 @@ function renderAll() {
   notes.filter((n) => n.type === "text").forEach((note) => {
     const el = createNoteElement(note, deleteNote, runPrompt, updateNote, null);
     makeDraggable(el, note);
+    applyFocus(el, note.id);
+    attachFocusClick(el, note.id);
     canvas.appendChild(el);
   });
 
@@ -239,6 +245,36 @@ function renderAll() {
   notes
     .filter((n) => n.type === "prompt" && !notes.some((p) => p.id === n.parent_id && p.type === "response"))
     .forEach((note) => renderChain(note));
+}
+
+// In focus mode, dim every top-level group whose id isn't the active one.
+// Derived/visual only — applied during renderAll, never persisted.
+function applyFocus(el, groupId) {
+  if (focusMode && groupId !== activeGroupId) el.classList.add("dimmed");
+}
+
+// The first top-level group in render order (text notes first, then chain roots),
+// mirroring renderAll. Used to pre-select a group when focus mode turns on so the
+// view is never "everything dimmed, nothing bright". null on an empty board.
+function firstGroupId() {
+  const firstText = notes.find((n) => n.type === "text");
+  if (firstText) return firstText.id;
+  const firstRoot = notes.find(
+    (n) => n.type === "prompt" && !notes.some((p) => p.id === n.parent_id && p.type === "response")
+  );
+  return firstRoot ? firstRoot.id : null;
+}
+
+// Click a group (while focus mode is on) to make it the active, bright one.
+// Ignores drag-releases and clicks on controls/inputs so normal use is intact.
+function attachFocusClick(el, groupId) {
+  el.addEventListener("click", (e) => {
+    if (!focusMode || wasDragging) return;
+    if (e.target.closest("button, textarea, input, select, .resize-handle")) return;
+    if (activeGroupId === groupId) return;
+    activeGroupId = groupId;
+    renderAll();
+  });
 }
 
 function renderChain(rootPrompt) {
@@ -280,6 +316,8 @@ function renderChain(rootPrompt) {
     }
   }
 
+  applyFocus(group, rootPrompt.id);
+  attachFocusClick(group, rootPrompt.id);
   canvas.appendChild(group);
 }
 
@@ -304,6 +342,10 @@ function makeDraggableGroup(groupEl, promptNote) {
   });
 }
 
+// Set true while a drag is moving the cursor, so the click that follows a
+// drag-release doesn't get mistaken for a focus-selecting click.
+let wasDragging = false;
+
 function attachDrag(handle, container, note, onMove) {
   if (!handle) return;
   let startX, startY, origX, origY;
@@ -319,6 +361,7 @@ function attachDrag(handle, container, note, onMove) {
     container.style.zIndex = 1000;
 
     function move(e) {
+      if (Math.abs(e.clientX - startX) > 3 || Math.abs(e.clientY - startY) > 3) wasDragging = true;
       onMove(origX + (e.clientX - startX), origY + (e.clientY - startY));
     }
     function up() {
@@ -326,6 +369,8 @@ function attachDrag(handle, container, note, onMove) {
       document.removeEventListener("mousemove", move);
       document.removeEventListener("mouseup", up);
       scheduleSave();
+      // Clear after the click that follows this mouseup has been dispatched.
+      setTimeout(() => { wasDragging = false; }, 0);
     }
     document.addEventListener("mousemove", move);
     document.addEventListener("mouseup", up);
@@ -371,6 +416,21 @@ document.getElementById("btn-new-text").addEventListener("click", () => {
 });
 document.getElementById("btn-new-prompt").addEventListener("click", () => {
   const note = addNote("prompt");
+  renderAll();
+});
+document.getElementById("btn-focus").addEventListener("click", (e) => {
+  focusMode = !focusMode;
+  if (focusMode) {
+    document.body.dataset.focusMode = "on";
+    // Pre-select a group so one stays bright immediately (avoids the
+    // all-dimmed deadlock); keep any prior selection if it still exists.
+    if (!activeGroupId || !notes.some((n) => n.id === activeGroupId)) {
+      activeGroupId = firstGroupId();
+    }
+  } else {
+    delete document.body.dataset.focusMode;
+  }
+  e.currentTarget.classList.toggle("active", focusMode);
   renderAll();
 });
 

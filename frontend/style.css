@@ -96,6 +96,9 @@ body::before {
 #btn-new-prompt      { background: var(--accent); color: var(--paper); border-color: var(--ink); }
 #btn-new-prompt:hover { background: #6e2e24; }
 
+#btn-focus:hover       { background: var(--ink); color: var(--paper); }
+#btn-focus.active      { background: var(--ink); color: var(--paper); box-shadow: inset 2px 2px 0 rgba(0,0,0,0.35); }
+
 #save-status {
   margin-left: auto;
   font-family: 'Source Code Pro', monospace;
@@ -169,6 +172,15 @@ body::before {
   min-width: 200px;
   display: flex;
   flex-direction: column;
+}
+
+/* Focus mode: non-active groups dim to the background but stay clickable, so a
+   click brings one into focus. Their internal controls are guarded in JS
+   (attachFocusClick) so a dimmed card is selectable but not operable. */
+.note.dimmed,
+[data-group-id].dimmed {
+  opacity: 0.25;
+  transition: opacity 0.15s;
 }
 
 .resize-handle {
