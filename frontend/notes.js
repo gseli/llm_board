@@ -25,6 +25,19 @@ const TEMPLATES = [
   { id: "test_my_understanding", bloom: "evaluate",    label: "Test my understanding",   build: (i) => `I think I understand "${i}". Ask me 2–3 short questions to test whether I really do, then tell me what I should focus on.` },
 ];
 
+// Explore moves — one-click next steps shown on each response card. Grounded in the
+// Graesser question taxonomy + Aristotle's topoi: feature-specification, causal,
+// example, comparison/relationship, concept-completion (the rabbit-hole jump). The
+// chain history already travels via conversation_context, so "this" needs no antecedent.
+// needsInput moves reveal a tiny inline field (a second term) before sending.
+const EXPLORE_MOVES = [
+  { id: "more",    label: "Tell me more",     needsInput: false, build: ()  => `Tell me more about this — add detail and important properties not yet covered.` },
+  { id: "why",     label: "Why?",             needsInput: false, build: ()  => `Why is this so? Explain the underlying reason or mechanism.` },
+  { id: "example", label: "Give an example",  needsInput: false, build: ()  => `Give a concrete, real example of this in action.` },
+  { id: "relate",  label: "Relate / compare…", needsInput: true,  inputPlaceholder: "to what?",   build: (i) => `How does this relate to and compare with ${i}? Cover what's similar and what's different.` },
+  { id: "term",    label: "Explain a term…",   needsInput: true,  inputPlaceholder: "which term?", build: (i) => `Explain the term "${i}" as it was used above — define it simply and say how it connects to what we were discussing.` },
+];
+
 function makeResizeHandle() {
   const handle = document.createElement("div");
   handle.className = "resize-handle";
@@ -41,7 +54,7 @@ function getBloomForTemplate(templateId) {
   return tpl ? BLOOM_LEVELS[tpl.bloom] : BLOOM_LEVELS.remember;
 }
 
-function createNoteElement(note, onDelete, onPromptRun, onContentChange, onReply) {
+function createNoteElement(note, onDelete, onPromptRun, onContentChange, onReply, onExplore) {
   const el = document.createElement("div");
   el.className = `note note-${note.type}`;
   el.dataset.id = note.id;
@@ -68,18 +81,74 @@ function createNoteElement(note, onDelete, onPromptRun, onContentChange, onReply
     body.appendChild(content);
     inner.appendChild(body);
 
-    // Reply footer
+    // Footer: one-click explore moves + a free-text "ask your own" escape hatch.
     const footer = document.createElement("div");
     footer.className = "note-footer";
-    const replyBtn = document.createElement("button");
-    replyBtn.className = "btn-reply";
-    replyBtn.textContent = "↩ follow up";
-    replyBtn.disabled = !!note.loading;
-    replyBtn.addEventListener("click", (e) => {
+
+    const movesRow = document.createElement("div");
+    movesRow.className = "explore-moves";
+
+    // Inline input revealed by needsInput moves; Enter submits, Esc cancels.
+    const inlineWrap = document.createElement("div");
+    inlineWrap.className = "explore-input";
+    const inlineField = document.createElement("input");
+    inlineField.type = "text";
+    inlineWrap.appendChild(inlineField);
+    let activeMove = null;
+
+    function fire(move, value) {
+      inlineWrap.classList.remove("open");
+      inlineField.value = "";
+      activeMove = null;
+      if (onExplore) onExplore(note.id, move, (value || "").trim());
+    }
+
+    EXPLORE_MOVES.forEach((move) => {
+      const b = document.createElement("button");
+      b.className = "btn-move";
+      b.textContent = move.label;
+      b.disabled = !!note.loading;
+      b.addEventListener("click", (e) => {
+        e.stopPropagation();
+        if (!move.needsInput) { fire(move); return; }
+        // Toggle the inline input for this move.
+        if (activeMove === move.id && inlineWrap.classList.contains("open")) {
+          inlineWrap.classList.remove("open");
+          activeMove = null;
+        } else {
+          activeMove = move.id;
+          inlineField.placeholder = move.inputPlaceholder || "…";
+          inlineWrap.classList.add("open");
+          inlineField.focus();
+        }
+      });
+      movesRow.appendChild(b);
+    });
+
+    inlineField.addEventListener("keydown", (e) => {
+      e.stopPropagation();
+      if (e.key === "Enter") {
+        const move = EXPLORE_MOVES.find((m) => m.id === activeMove);
+        if (move && inlineField.value.trim()) fire(move, inlineField.value);
+      } else if (e.key === "Escape") {
+        inlineWrap.classList.remove("open");
+        activeMove = null;
+      }
+    });
+    inlineField.addEventListener("click", (e) => e.stopPropagation());
+
+    const askBtn = document.createElement("button");
+    askBtn.className = "btn-reply";
+    askBtn.textContent = "↩ ask your own";
+    askBtn.disabled = !!note.loading;
+    askBtn.addEventListener("click", (e) => {
       e.stopPropagation();
       if (onReply) onReply(note.id);
     });
-    footer.appendChild(replyBtn);
+
+    footer.appendChild(movesRow);
+    footer.appendChild(inlineWrap);
+    footer.appendChild(askBtn);
     inner.appendChild(footer);
 
     el.appendChild(inner);

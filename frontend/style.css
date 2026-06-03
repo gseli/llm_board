@@ -414,13 +414,55 @@ body::before {
 .note-response .response-content::-webkit-scrollbar-track { background: transparent; }
 .note-response .response-content::-webkit-scrollbar-thumb { background: #3a3020; }
 
-/* ── Response footer + reply button ── */
+/* ── Response footer: explore moves + reply ── */
 .note-footer {
   padding: 8px 12px;
   border-top: 1px solid rgba(212,200,150,0.12);
   display: flex;
-  justify-content: flex-end;
+  flex-direction: column;
+  gap: 7px;
 }
+
+/* one-click explore moves */
+.explore-moves {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+.btn-move {
+  background: transparent;
+  border: 1px solid rgba(212,200,150,0.35);
+  color: var(--terminal-ink);
+  font-family: 'Source Code Pro', monospace;
+  font-size: 0.68rem;
+  letter-spacing: 0.04em;
+  padding: 4px 8px;
+  cursor: pointer;
+  transition: background 0.12s, color 0.12s, border-color 0.12s;
+}
+.btn-move:hover:not(:disabled) {
+  background: var(--terminal-accent);
+  color: var(--terminal-bg);
+  border-color: var(--terminal-accent);
+}
+.btn-move:disabled { opacity: 0.3; cursor: not-allowed; }
+
+/* inline input revealed by two-part moves (relate / explain a term) */
+.explore-input { display: none; }
+.explore-input.open { display: block; }
+.explore-input input {
+  width: 100%;
+  background: var(--terminal-bg);
+  border: 1px solid var(--terminal-accent);
+  color: var(--terminal-ink);
+  font-family: 'Source Code Pro', monospace;
+  font-size: 0.72rem;
+  padding: 5px 8px;
+  outline: none;
+}
+.explore-input input::placeholder { color: var(--terminal-dim); font-style: italic; }
+
+.note-footer .btn-reply { align-self: flex-end; }
 
 .btn-reply {
   background: transparent;
