@@ -141,10 +141,20 @@ function buildHistory(responseNoteId) {
   while (current) {
     if (current.type === "response" && current.content) {
       messages.unshift({ role: "assistant", content: current.content });
-    } else if (current.type === "prompt" && current.content) {
-      // Reconstruct what was actually sent for this prompt
-      const tpl = TEMPLATES.find((t) => t.id === (current.prompt_template || "explain_term")) || TEMPLATES[0];
-      messages.unshift({ role: "user", content: tpl.build(current.content.trim() || "this concept") });
+    } else if (current.type === "prompt") {
+      // Reconstruct what was actually sent. A follow-up created by an explore move
+      // (parent is a response) used an EXPLORE_MOVES move; a root prompt used a TEMPLATE.
+      const text = (current.content || "").trim();
+      let built;
+      if (current.parent_id) {
+        const move = EXPLORE_MOVES.find((m) => m.id === current.prompt_template);
+        if (move) built = move.build(text);
+      }
+      if (built === undefined && text) {
+        const tpl = TEMPLATES.find((t) => t.id === (current.prompt_template || "explain_term")) || TEMPLATES[0];
+        built = tpl.build(text);
+      }
+      if (built) messages.unshift({ role: "user", content: built });
     }
     current = current.parent_id ? notes.find((n) => n.id === current.parent_id) : null;
   }
@@ -175,6 +185,37 @@ function replyToResponse(responseNoteId) {
   });
 
   renderAll();
+}
+
+// One-click explore: build the move's prompt, create (or replace) the follow-up
+// prompt node under this response, and run it immediately — no separate compose step.
+function exploreFromResponse(responseNoteId, move, inputText) {
+  const responseNote = notes.find((n) => n.id === responseNoteId);
+  if (!responseNote || responseNote.loading) return;
+
+  // Replace any existing follow-up under this response (re-running a move overwrites,
+  // mirroring runPrompt's stale-response handling). deleteNote cleans up its subtree.
+  const existingFollowUp = notes.find((n) => n.parent_id === responseNoteId && n.type === "prompt");
+  if (existingFollowUp) {
+    const ids = new Set();
+    (function collect(id) { ids.add(id); notes.filter((n) => n.parent_id === id).forEach((c) => collect(c.id)); })(existingFollowUp.id);
+    notes = notes.filter((n) => !ids.has(n.id));
+  }
+
+  const history = buildHistory(responseNoteId);
+  const threadId = responseNote.thread_id || responseNote.parent_id;
+
+  const followUp = addNote("prompt", {
+    parent_id: responseNoteId,
+    thread_id: threadId,
+    conversation_context: history,
+    prompt_template: move.id,
+    content: inputText || "",
+    x: responseNote.x,
+    y: 0, // position managed by renderChain
+  });
+
+  runPrompt(followUp.id, move.build(inputText || ""));
 }
 
 // ── Prompt execution ─────────────────────────────────────────
@@ -290,7 +331,7 @@ function renderChain(rootPrompt) {
   let isFirst = true;
 
   while (current) {
-    const el = createNoteElement(current, deleteNote, runPrompt, updateNote, replyToResponse);
+    const el = createNoteElement(current, deleteNote, runPrompt, updateNote, replyToResponse, exploreFromResponse);
     el.style.left = "";
     el.style.top = "";
     el.style.position = "relative";
