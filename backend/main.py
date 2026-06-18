@@ -22,6 +22,7 @@ class PromptRequest(BaseModel):
 class BoardData(BaseModel):
     notes: list
     layout: Optional[str] = None  # "tree" once migrated; absent on legacy boards
+    pill_pos: Optional[dict] = None  # dragged orbit-pill positions, keyed "resp:move"
 
 
 @app.get("/board/{name}")

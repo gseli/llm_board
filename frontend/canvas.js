@@ -84,12 +84,13 @@ async function loadBoard() {
   const res = await fetch(`/board/${BOARD_NAME}`);
   const data = await res.json();
   notes = data.notes || [];
-  const needsStamp = data.layout !== "tree" && notes.length > 0;
+  pillPos = data.pill_pos || {};
+  const legacy = data.layout !== "tree" && notes.length > 0;
   layout = "tree";
   renderAll();
-  // Persist the migration stamp on first load of a real (non-empty) legacy board.
-  // Skip empty boards so merely visiting an unknown board name doesn't create a file.
-  if (needsStamp) scheduleSave();
+  // A pre-tree (vertical) board has stale x/y — tidy once to lay it out
+  // horizontally and store the positions, then it's stable like any tree board.
+  if (legacy) tidyTree();
 }
 
 function scheduleSave() {
@@ -99,7 +100,7 @@ function scheduleSave() {
     await fetch(`/board/${BOARD_NAME}`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ notes, layout }),
+      body: JSON.stringify({ notes, layout, pill_pos: pillPos }),
     });
     setSaveStatus("saved");
     setTimeout(() => setSaveStatus(""), 1500);
@@ -138,17 +139,11 @@ function generateId() {
 }
 
 function addNote(type, extra = {}) {
-  // Place near the viewport's top-left in WORLD coords (inverse camera transform),
-  // so a new note lands on-screen regardless of pan/zoom.
-  const r = document.getElementById("canvas-container").getBoundingClientRect();
-  const worldX = (r.width * 0.18 - cam.x) / cam.k;
-  const worldY = (r.height * 0.18 - cam.y) / cam.k;
-
   const note = {
     id: generateId(),
     type,
-    x: worldX + Math.random() * 60,
-    y: worldY + Math.random() * 40,
+    x: null,
+    y: null,
     content: "",
     prompt_template: "explain_term",
     parent_id: null,
@@ -158,6 +153,19 @@ function addNote(type, extra = {}) {
     ...extra,
   };
   notes.push(note);
+  // One-time placement: a sensible non-overlapping spot, computed now and stored.
+  // Existing nodes are never moved to make room. A brand-new root with no parent
+  // and no given position lands near the viewport (inverse camera transform).
+  if (note.x == null || note.y == null) {
+    if (!note.parent_id) {
+      const r = document.getElementById("canvas-container").getBoundingClientRect();
+      const ys = notes.filter((n) => n.id !== note.id && n.y != null).map((n) => n.y);
+      note.x = (r.width * 0.18 - cam.x) / cam.k;
+      note.y = ys.length ? Math.max(...ys) + 220 : (r.height * 0.18 - cam.y) / cam.k;
+    } else {
+      placeNewNode(note);
+    }
+  }
   scheduleSave();
   return note;
 }
@@ -190,6 +198,11 @@ function deleteNote(id) {
 
   const removedIds = new Set(removed.map((n) => n.id));
   notes = notes.filter((n) => !removedIds.has(n.id));
+
+  // Drop any dragged-pill positions for the removed responses (else they leak).
+  Object.keys(pillPos).forEach((k) => {
+    if (removedIds.has(k.split(":")[0])) delete pillPos[k];
+  });
 
   undoStack.push(removed);
   if (undoStack.length > UNDO_LIMIT) undoStack.shift();
@@ -352,8 +365,8 @@ async function runPrompt(parentId, builtPrompt) {
   const responseNote = {
     id: generateId(),
     type: "response",
-    x: parent.x,
-    y: 0, // managed by renderChain
+    x: null,
+    y: null,
     content: "",
     parent_id: parentId,
     thread_id: parent.thread_id || parentId,
@@ -361,6 +374,7 @@ async function runPrompt(parentId, builtPrompt) {
     loading: true,
   };
   notes.push(responseNote);
+  placeNewNode(responseNote); // one-time spot (right of its source; nothing else moves)
   renderAll();
 
   try {
@@ -385,16 +399,23 @@ async function runPrompt(parentId, builtPrompt) {
 // ── Rendering ─────────────────────────────────────────────────
 
 // Tidy-tree layout constants (world px).
-const COL_W = 470;     // horizontal distance between depth columns (room for the orbit gutter)
+const COL_W = 560;     // horizontal distance between depth columns (room for the orbit gutter:
+                       // ~290 card + 90 gap + 132 pill, so pills never reach the child column)
 const ROW_GAP = 28;    // vertical gap between sibling subtrees
 const TREE_GAP = 70;   // vertical gap between top-level trees
 const FALLBACK_H = 150; // assumed card height before it has been measured
 
 // Orbit (floating explore-move pills shown right of each response).
-const ORBIT_GAP = 14;  // gap between a response's right edge and its orbit pills
+const ORBIT_GAP = 90;  // gap between a response's right edge and its orbit pills
+                       // (roomy, so the connecting tethers are clearly visible)
 const ORBIT_W = 132;   // orbit pill width
 const MOVE_H = 27;      // orbit pill height
 const ORBIT_VGAP = 6;  // vertical gap between orbit pills
+
+// Dragged pill positions, keyed `${responseId}:${moveId}` → {x, y} (absolute
+// world coords). A pill with an entry here is freeform; others use the default
+// orbit slot. Persisted on the board so a custom arrangement survives reload.
+let pillPos = {};
 
 // The pills shown on a response: every explore move + an "ask your own" entry.
 // Shared by orbitHeightFor (layout reservation) and the renderer so they agree.
@@ -473,29 +494,24 @@ function subtreeHeight(note, heights, seen = new Set()) {
   return Math.max(own, kidsTotal, orbit);
 }
 
-// Assign world x/y to every visible node in a subtree. By default x is by depth
-// and y centers the node on its subtree band (siblings never overlap). A node the
-// user dragged (manual_x/manual_y pinned) sits at its pin, and its whole subtree
-// lays out relative to that pin so it travels with the node.
-//   x: column origin for this node's children
-//   top: top of the vertical band these nodes occupy
+// Assign world x/y to every visible node in a subtree: x by depth column, y
+// centered on the node's subtree band so siblings never overlap. Used only by the
+// on-demand tidy (computeForest) — it produces clean positions, ignoring any
+// freeform placement (tidy is the deliberate "re-align everything" action).
+//   x: this node's left; top: top of the vertical band the subtree occupies.
 function assignLayout(note, x, top, pos, heights, seen = new Set()) {
   if (seen.has(note.id)) return 0;
   seen.add(note.id);
   const band = subtreeHeight(note, heights);
-  const pinned = note.manual_x != null && note.manual_y != null;
-  const nx = pinned ? note.manual_x : x;
-  const ny = pinned ? note.manual_y : top + band / 2;
-  pos[note.id] = { x: nx, y: ny };
-  // Children flow from this node's actual position (so a pinned/dragged node
-  // carries its subtree). Center the children band on this node's y.
-  const childTotal = displayChildrenOf(note.id)
-    .reduce((s, k) => s + subtreeHeight(k.node, heights), 0)
-    + ROW_GAP * Math.max(0, displayChildrenOf(note.id).length - 1);
+  const ny = top + band / 2;
+  pos[note.id] = { x, y: ny };
+  const kids = displayChildrenOf(note.id);
+  const childTotal = kids.reduce((s, k) => s + subtreeHeight(k.node, heights), 0)
+    + ROW_GAP * Math.max(0, kids.length - 1);
   let cursor = ny - childTotal / 2;
-  displayChildrenOf(note.id).forEach((k) => {
+  kids.forEach((k) => {
     const kBand = subtreeHeight(k.node, heights);
-    assignLayout(k.node, nx + COL_W, cursor, pos, heights, seen);
+    assignLayout(k.node, x + COL_W, cursor, pos, heights, seen);
     cursor += kBand + ROW_GAP;
   });
   return band;
@@ -511,36 +527,32 @@ function computeForest(heights) {
   return pos;
 }
 
+// renderAll PAINTS the board from each note's STORED position (note.x/note.y) —
+// it does not run the tidy-tree layout. Positions only change when a node is
+// created (placeNewNode), dragged, or the user presses "tidy" (tidyTree). This
+// is what keeps the canvas calm: touching one node never reflows the rest.
 function renderAll() {
   canvas.innerHTML = "";
 
-  // SVG wire layer underneath the cards (parent→child connectors).
   const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
   svg.id = "wires";
   canvas.appendChild(svg);
-  // Orbit layer (floating move pills) above the wires, below the cards.
   const orbitLayer = document.createElement("div");
   orbitLayer.id = "orbits";
   canvas.appendChild(orbitLayer);
 
-  // Pass 1: render every card at its column x (top temporary) so it's in the DOM
-  // and measurable. Orphans (parent_id set but parent gone) get no column and are
-  // skipped — warn so a silently-lost note is at least visible in the console.
+  // pos[id] = the node's stored top-left {x,y}. (Wires use vertical centers,
+  // computed once cards are measured below.)
+  const pos = {};
   const cards = {};
-  const provisional = computeForest({}); // x is height-independent; gives columns
   notes.forEach((note) => {
     if (isHiddenPrompt(note)) return; // follow-up prompts render no card (pass-through)
-    const p = provisional[note.id];
-    if (!p) {
-      if (note.parent_id) console.warn("Orphaned note (parent missing), not rendered:", note.id);
-      return;
-    }
     const el = createNoteElement(
       note, deleteNote, runPrompt, updateNote, replyToResponse, exploreFromResponse
     );
     el.style.position = "absolute";
-    el.style.left = `${p.x}px`;
-    el.style.top = "0px";
+    el.style.left = `${note.x || 0}px`;
+    el.style.top = `${note.y || 0}px`;
     el.dataset.id = note.id;
     attachResize(el, note);
     attachNodeDrag(el, note);        // free per-node drag + long-press unlink
@@ -550,38 +562,123 @@ function renderAll() {
     attachFocusClick(el, rootId);
     canvas.appendChild(el);
     cards[note.id] = el;
+    pos[note.id] = { x: note.x || 0, y: (note.y || 0) + el.offsetHeight / 2 };
   });
 
-  // Pass 2: measure real heights, recompute the forest, place cards.
-  const heights = {};
-  Object.entries(cards).forEach(([id, el]) => { heights[id] = el.offsetHeight; });
-  const pos = computeForest(heights);
-  Object.entries(cards).forEach(([id, el]) => {
-    const p = pos[id];
-    if (p) { el.style.left = `${p.x}px`; el.style.top = `${p.y - el.offsetHeight / 2}px`; }
-  });
-
-  // Build orbit pills (before wires, so wire routing can use pill positions).
   const orbitPos = buildOrbits(orbitLayer, pos, cards);
   drawWires(svg, pos, cards, orbitPos);
 
-  // Keep the render state so a live drag can redraw just the wires without a
-  // full renderAll on every mousemove.
   lastRender = { svg, pos, cards, orbitPos };
 }
 
 // Latest render state, used by redrawWiresLive during a drag.
 let lastRender = null;
 
-// Redraw wires against the dragged node's CURRENT on-screen position (read from
-// the DOM), patching the stale layout `pos` so connectors track the card live.
-function redrawWiresLive(draggedId) {
+// Redraw wires (and pill tethers) against a dragged element's CURRENT on-screen
+// position, so connectors track live. `kind` is "node" or "pill".
+function redrawWiresLive(id, kind, pillKey) {
   if (!lastRender) return;
   const { svg, pos, cards, orbitPos } = lastRender;
-  const el = cards[draggedId];
-  if (el) {
-    pos[draggedId] = { x: el.offsetLeft, y: el.offsetTop + el.offsetHeight / 2 };
+  if (kind === "node") {
+    const el = cards[id];
+    if (el) pos[id] = { x: el.offsetLeft, y: el.offsetTop + el.offsetHeight / 2 };
   }
+  svg.innerHTML = "";
+  drawWires(svg, pos, cards, orbitPos);
+}
+
+// ── On-demand layout: place-once + tidy ───────────────────────
+
+// Compute a non-overlapping spot for ONE freshly-created node and store it on the
+// note. Existing nodes are never moved. A root goes into clear space below all
+// current content; a fork goes right of its source response, stacked below any
+// siblings already placed there.
+function placeNewNode(note) {
+  if (isHiddenPrompt(note)) return; // hidden — never placed/painted
+  // Find the source response this node hangs off (direct parent, or the parent of
+  // its hidden follow-up prompt).
+  let source = null;
+  if (note.parent_id) {
+    const parent = notes.find((n) => n.id === note.parent_id);
+    source = parent && isHiddenPrompt(parent) ? notes.find((n) => n.id === parent.parent_id) : parent;
+  }
+  if (source && source.x != null) {
+    // Right of the source, stacked below siblings already sharing that column.
+    const colX = source.x + COL_W;
+    const siblings = displayChildrenOf(source.id)
+      .map((c) => c.node).filter((n) => n.id !== note.id && n.y != null);
+    const below = siblings.length ? Math.max(...siblings.map((s) => s.y)) + 200 : (source.y || 0);
+    note.x = colX;
+    note.y = below;
+  } else {
+    // A root with no placement yet: drop it in clear space below everything.
+    const ys = notes.filter((n) => n.id !== note.id && n.y != null).map((n) => n.y);
+    note.x = 40;
+    note.y = ys.length ? Math.max(...ys) + 220 : 40;
+  }
+}
+
+// The user-invoked tidy: run the tidy-tree layout once and GLIDE the existing
+// cards into place — the only time the canvas moves on its own. It animates the
+// live DOM (rather than re-rendering) so cards transition from their current
+// spots; wires are redrawn each frame during the glide. Pills snap back to their
+// default orbit. Soft, slow easing ("leaves settling"), never an abrupt snap.
+function tidyTree() {
+  const heights = {};
+  const measured = {};
+  document.querySelectorAll("#canvas > .note").forEach((el) => {
+    heights[el.dataset.id] = el.offsetHeight;
+    measured[el.dataset.id] = el;
+  });
+  const pos = computeForest(heights); // {id:{x, y-center}}
+
+  pillPos = {}; // pills return to their orbit
+
+  document.body.classList.add("tidying");
+  // Write new stored positions and nudge the live elements; CSS glides them.
+  notes.forEach((note) => {
+    const p = pos[note.id];
+    if (!p) return;
+    const el = measured[note.id];
+    const h = el ? el.offsetHeight : FALLBACK_H;
+    note.x = p.x;
+    note.y = p.y - h / 2;
+    if (el) { el.style.left = `${note.x}px`; el.style.top = `${note.y}px`; }
+  });
+
+  // Re-place orbit pills to match (they have no stored pin now) and keep wires
+  // following the gliding cards for the duration of the transition.
+  const DUR = 1150;
+  let raf;
+  const startTs = { v: null };
+  const tick = (ts) => {
+    if (startTs.v == null) startTs.v = ts;
+    // Rebuild orbit layer + wires from current DOM card positions each frame.
+    refreshOrbitsAndWiresFromDom();
+    if (ts - startTs.v < DUR) raf = requestAnimationFrame(tick);
+    else {
+      document.body.classList.remove("tidying");
+      renderAll(); // settle: clean rebuild at the final positions
+      scheduleSave();
+    }
+  };
+  raf = requestAnimationFrame(tick);
+}
+
+// Redraw wires from the cards' CURRENT on-screen positions (used during the tidy
+// glide so connectors track the moving cards). Orbit pills are left to settle and
+// are rebuilt once at the end by renderAll — cheaper than rebuilding them per frame.
+function refreshOrbitsAndWiresFromDom() {
+  if (!lastRender) return;
+  const { svg, orbitPos } = lastRender;
+  const cards = {};
+  const pos = {};
+  document.querySelectorAll("#canvas > .note").forEach((el) => {
+    cards[el.dataset.id] = el;
+    pos[el.dataset.id] = { x: el.offsetLeft, y: el.offsetTop + el.offsetHeight / 2 };
+  });
+  lastRender.pos = pos;
+  lastRender.cards = cards;
   svg.innerHTML = "";
   drawWires(svg, pos, cards, orbitPos);
 }
@@ -597,26 +694,81 @@ function buildOrbits(layer, pos, cards) {
     const p = pos[note.id];
     if (!p) return;
     const cardW = cards[note.id] ? cards[note.id].offsetWidth : 290;
-    // Clamp into the gutter so a user-widened card can't push pills into the
-    // child column at p.x + COL_W (which would overlap forked child cards).
-    const orbitX = Math.min(p.x + cardW + ORBIT_GAP, p.x + COL_W - ORBIT_W - ORBIT_GAP);
+    const defaultX = p.x + cardW + ORBIT_GAP;
     const blockH = moves.length * MOVE_H + (moves.length - 1) * ORBIT_VGAP;
     const firstTop = p.y - blockH / 2;
-    // A move is "spent" if a child prompt under this response already used it.
     const usedMoveIds = new Set(childrenOf(note.id).map((c) => c.prompt_template));
     const dimmed = focusMode && rootOf(note.id) !== activeGroupId;
     orbitPos[note.id] = {};
 
     moves.forEach((move, i) => {
-      const top = firstTop + i * (MOVE_H + ORBIT_VGAP);
-      orbitPos[note.id][move.id] = { x: orbitX, y: top + MOVE_H / 2 };
+      const key = `${note.id}:${move.id}`;
+      // A dragged pill keeps its stored absolute position; others sit in the
+      // default orbit slot to the right of the response.
+      const pinned = pillPos[key];
+      const left = pinned ? pinned.x : defaultX;
+      const top = pinned ? pinned.y : firstTop + i * (MOVE_H + ORBIT_VGAP);
+      orbitPos[note.id][move.id] = { x: left, y: top + MOVE_H / 2 };
       const pill = buildOrbitPill(note, move, usedMoveIds.has(move.id), dimmed);
-      pill.style.left = `${orbitX}px`;
+      pill.style.left = `${left}px`;
       pill.style.top = `${top}px`;
+      pill.dataset.resp = note.id;       // so a dragged response can carry its pills
+      pill.dataset.move = move.id;
+      attachPillDrag(pill, note.id, move.id);
       layer.appendChild(pill);
     });
   });
   return orbitPos;
+}
+
+// Pills are freely draggable; a dragged pill pins to absolute world coords
+// (pillPos) and its tether follows live. A plain click still fires the move
+// (drag is only entered past a small movement threshold).
+function attachPillDrag(pill, responseId, moveId) {
+  const label = pill.querySelector(".orbit-label");
+  if (!label) return;
+  label.addEventListener("mousedown", (e) => {
+    if (e.button !== 0) return;
+    const sx = e.clientX, sy = e.clientY;
+    const origX = parseFloat(pill.style.left) || 0;
+    const origY = parseFloat(pill.style.top) || 0;
+    let dragging = false, raf = false;
+    const move = (ev) => {
+      const dx = ev.clientX - sx, dy = ev.clientY - sy;
+      if (!dragging && Math.hypot(dx, dy) > DRAG_THRESH) { dragging = true; pill.style.zIndex = 1000; }
+      if (dragging) {
+        e.stopPropagation();
+        const nx = origX + dx / cam.k, ny = origY + dy / cam.k;
+        pill.style.left = `${nx}px`;
+        pill.style.top = `${ny}px`;
+        if (!raf) {
+          raf = true;
+          requestAnimationFrame(() => {
+            raf = false;
+            const o = lastRender && lastRender.orbitPos[responseId];
+            if (o) o[moveId] = { x: nx, y: ny + MOVE_H / 2 };
+            redrawWiresLive(responseId, "pill");
+          });
+        }
+      }
+    };
+    const up = () => {
+      document.removeEventListener("mousemove", move, true);
+      document.removeEventListener("mouseup", up, true);
+      pill.style.zIndex = "";
+      if (dragging) {
+        pillPos[`${responseId}:${moveId}`] = { x: parseFloat(pill.style.left), y: parseFloat(pill.style.top) };
+        // Suppress the trailing click so the move doesn't fire after a drag. The
+        // pill click handlers (buildOrbitPill) bail while wasDragging is set; the
+        // flag clears after the click event that follows this mouseup is dispatched.
+        wasDragging = true; setTimeout(() => { wasDragging = false; }, 0);
+        scheduleSave();
+      }
+    };
+    // Capture phase so we can intercept before the label's own click handler.
+    document.addEventListener("mousemove", move, true);
+    document.addEventListener("mouseup", up, true);
+  });
 }
 
 // One orbit pill. Non-input moves fork on click; needsInput moves toggle a tiny
@@ -632,11 +784,11 @@ function buildOrbitPill(note, move, spent, dimmed) {
   pill.appendChild(label);
 
   if (move.ask) {
-    label.addEventListener("click", (e) => { e.stopPropagation(); replyToResponse(note.id); });
+    label.addEventListener("click", (e) => { e.stopPropagation(); if (wasDragging) return; replyToResponse(note.id); });
     return pill;
   }
   if (!move.needsInput) {
-    label.addEventListener("click", (e) => { e.stopPropagation(); exploreFromResponse(note.id, move, ""); });
+    label.addEventListener("click", (e) => { e.stopPropagation(); if (wasDragging) return; exploreFromResponse(note.id, move, ""); });
     return pill;
   }
 
@@ -648,6 +800,7 @@ function buildOrbitPill(note, move, spent, dimmed) {
   pill.appendChild(field);
   label.addEventListener("click", (e) => {
     e.stopPropagation();
+    if (wasDragging) return;
     pill.classList.toggle("open");
     if (pill.classList.contains("open")) field.focus();
   });
@@ -777,12 +930,11 @@ function attachResize(el, note) {
 }
 
 // One header gesture, two outcomes:
-//   • DRAG (move early) → reposition this node freely, pinning manual_x/manual_y
-//     so the tidy-tree flows around it instead of overwriting your placement.
+//   • DRAG (move early) → freely reposition this node. It stays exactly where you
+//     drop it (stored on note.x/note.y); NOTHING else moves. Connectors track live.
 //   • HOLD STILL ~400ms → "lift" (armed) → release UNLINKS the node + subtree
 //     into a standalone root (non-roots only; context-before dropped).
-// A quick click does neither. The whole subtree shifts with a dragged node, since
-// children auto-flow from its (now pinned) position.
+// A quick click does neither.
 const LONG_PRESS_MS = 400;
 const DRAG_THRESH = 6;
 function attachNodeDrag(el, note) {
@@ -795,8 +947,11 @@ function attachNodeDrag(el, note) {
     e.preventDefault(); // suppress native text selection during press
 
     const sx = e.clientX, sy = e.clientY;
-    const origX = (note.manual_x != null) ? note.manual_x : parseFloat(el.style.left) || 0;
-    const origY = (note.manual_y != null) ? note.manual_y : (parseFloat(el.style.top) || 0) + el.offsetHeight / 2;
+    const origX = parseFloat(el.style.left) || 0;
+    const origY = parseFloat(el.style.top) || 0;
+    // Capture this response's pill origins so they can be carried by the delta.
+    const pillOrigins = [...document.querySelectorAll(`#orbits .orbit-move[data-resp="${note.id}"]`)]
+      .map((p) => ({ el: p, move: p.dataset.move, x: parseFloat(p.style.left) || 0, y: parseFloat(p.style.top) || 0 }));
     let mode = null; // 'drag' | 'unlink'
     let rafPending = false;
     const canUnlink = !!note.parent_id;
@@ -811,15 +966,24 @@ function attachNodeDrag(el, note) {
         mode = "drag";                 // moved before the hold armed → it's a drag
         if (timer) clearTimeout(timer);
         el.style.zIndex = 1000;
+        el.classList.add("dragging");  // suppress the glide transition while dragging
       }
       if (mode === "drag") {
-        const nx = origX + dx / cam.k, ny = origY + dy / cam.k;
-        el.style.left = `${nx}px`;
-        el.style.top = `${ny - el.offsetHeight / 2}px`;
-        // Redraw connectors live, throttled to one repaint per frame.
+        el.style.left = `${origX + dx / cam.k}px`;
+        el.style.top = `${origY + dy / cam.k}px`;
+        // Carry this response's orbit pills along by the same world-space delta so
+        // they stay attached to the card (and their tethers stay short).
+        const wdx = dx / cam.k, wdy = dy / cam.k;
+        const o = lastRender && lastRender.orbitPos[note.id];
+        pillOrigins.forEach((po) => {
+          const nx = po.x + wdx, ny = po.y + wdy;
+          po.el.style.left = `${nx}px`;
+          po.el.style.top = `${ny}px`;
+          if (o && o[po.move]) o[po.move] = { x: nx, y: ny + MOVE_H / 2 };
+        });
         if (!rafPending) {
           rafPending = true;
-          requestAnimationFrame(() => { rafPending = false; redrawWiresLive(note.id); });
+          requestAnimationFrame(() => { rafPending = false; redrawWiresLive(note.id, "node"); });
         }
       }
     };
@@ -828,11 +992,19 @@ function attachNodeDrag(el, note) {
       document.removeEventListener("mousemove", move);
       document.removeEventListener("mouseup", up);
       el.style.zIndex = "";
+      el.classList.remove("dragging");
       if (mode === "drag") {
-        note.manual_x = parseFloat(el.style.left);
-        note.manual_y = parseFloat(el.style.top) + el.offsetHeight / 2;
+        // Store where it landed. No renderAll — the node stays put and nothing
+        // else moves; the live redraw already left the wires correct.
+        note.x = parseFloat(el.style.left);
+        note.y = parseFloat(el.style.top);
+        if (lastRender) lastRender.pos[note.id] = { x: note.x, y: note.y + el.offsetHeight / 2 };
+        // Any PINNED pills that moved with the card keep their (new) pinned spot.
+        pillOrigins.forEach((po) => {
+          const key = `${note.id}:${po.move}`;
+          if (pillPos[key]) pillPos[key] = { x: parseFloat(po.el.style.left), y: parseFloat(po.el.style.top) };
+        });
         wasDragging = true; setTimeout(() => { wasDragging = false; }, 0);
-        renderAll();      // re-flow children around the pinned position + redraw wires
         scheduleSave();
       } else if (mode === "unlink") {
         el.classList.remove("lift");
@@ -911,6 +1083,7 @@ document.getElementById("btn-focus").addEventListener("click", (e) => {
   e.currentTarget.classList.toggle("active", focusMode);
   renderAll();
 });
+document.getElementById("btn-tidy").addEventListener("click", tidyTree);
 
 // ── Camera controls: pan, zoom (buttons / Ctrl+wheel / keyboard) ──
 // Manual card drag is gone (tidy-tree owns layout), so pan now works on the
