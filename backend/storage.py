@@ -41,3 +41,12 @@ def rename_board(old: str, new: str) -> None:
     if dst.exists():
         raise FileExistsError(f"board already exists: {new!r}")
     src.rename(dst)
+
+
+def delete_board(name: str) -> None:
+    if name == "default":
+        raise ValueError("the default board cannot be deleted")
+    path = _board_path(name)
+    if not path.exists():
+        raise FileNotFoundError(f"board not found: {name!r}")
+    path.unlink()

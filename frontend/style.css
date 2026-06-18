@@ -107,6 +107,8 @@ body::before {
 
 #btn-new-board:hover    { background: var(--ink); color: var(--paper); }
 #btn-rename-board:hover  { background: var(--ink); color: var(--paper); }
+#btn-delete-board:hover  { background: var(--accent); color: var(--paper); border-color: var(--ink); }
+#btn-delete-board[hidden] { display: none; }
 
 /* ── Modal (themed prompt / notice — replaces native window.prompt/alert) ── */
 #modal-overlay {
