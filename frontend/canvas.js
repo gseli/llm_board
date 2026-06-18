@@ -276,6 +276,53 @@ function exploreFromResponse(responseNoteId, move, inputText) {
   runPrompt(followUp.id, move.build(inputText || ""));
 }
 
+// ── Detach: break-out & unlink (one op, two entry points) ─────
+
+// Promote a node + its whole subtree to a forest root. The subtree travels via
+// existing parent_id links (children keep pointing at their parents); only this
+// node is cut loose. With originId → a break-out (keeps a dashed origin link to
+// the source). Without → an unlink (fully standalone; context-before dropped).
+function detachToRoot(nodeId, { originId } = {}) {
+  const node = notes.find((n) => n.id === nodeId);
+  if (!node) return;
+  node.parent_id = null;
+  node.is_root = true;
+  if (originId) {
+    node.origin_id = originId;
+  } else {
+    // Unlink: drop the context that came before, on this node AND its whole
+    // subtree — descendants' stored context still referenced the pre-cut history,
+    // which would otherwise replay if a descendant prompt were re-run.
+    delete node.origin_id;
+    const seen = new Set();
+    (function clear(id) {
+      if (seen.has(id)) return;
+      seen.add(id);
+      const n = notes.find((x) => x.id === id);
+      if (n) n.conversation_context = null;
+      childrenOf(id).forEach((c) => clear(c.id));
+    })(nodeId);
+  }
+  renderAll();
+  scheduleSave();
+}
+
+// Break out a TERM from an answer into a fresh, standalone tree: a new prompt
+// root (no carried context) that investigates the term on its own, with a faint
+// dashed origin link back to the source response.
+function breakOutTerm(sourceResponseId, term) {
+  term = (term || "").trim();
+  if (!term) return;
+  const root = addNote("prompt", {
+    content: term,
+    prompt_template: "explain_term",
+    is_root: true,
+    origin_id: sourceResponseId,
+  });
+  const tpl = TEMPLATES.find((t) => t.id === "explain_term") || TEMPLATES[0];
+  runPrompt(root.id, tpl.build(term));
+}
+
 // ── Prompt execution ─────────────────────────────────────────
 
 async function runPrompt(parentId, builtPrompt) {
@@ -346,7 +393,11 @@ function orbitMovesFor(note) {
   const content = (note.content || "").trim();
   // Eligible: a response that has a real answer (not loading, not an error).
   if (note.type !== "response" || note.loading || !content || content.startsWith("Error:")) return [];
-  return [...EXPLORE_MOVES, { id: "__ask__", label: "↩ ask your own", ask: true }];
+  return [
+    ...EXPLORE_MOVES,
+    { id: "__newtree__", label: "↗ new tree", needsInput: true, inputPlaceholder: "which term?", breakout: true },
+    { id: "__ask__", label: "↩ ask your own", ask: true },
+  ];
 }
 // Vertical space the orbit cluster needs, so a response reserves room for its pills.
 function orbitHeightFor(note) {
@@ -354,8 +405,10 @@ function orbitHeightFor(note) {
   return m ? m * MOVE_H + (m - 1) * ORBIT_VGAP : 0;
 }
 
-// A forest root is any note with no parent: a chain-root prompt or a standalone
-// text note. Each lays out as its own tree in its own vertical band.
+// A forest root is any note with no parent (a chain-root prompt, a standalone
+// text note, or a detached/broken-out node — which also has parent_id null). Each
+// lays out as its own tree in its own vertical band. Keying strictly on parent_id
+// avoids double-rendering if a node were ever marked is_root with a live parent.
 function forestRoots() {
   return notes.filter((n) => !n.parent_id);
 }
@@ -446,6 +499,8 @@ function renderAll() {
     el.style.top = "0px";
     el.dataset.id = note.id;
     if (note.type === "text") makeDraggable(el, note); else attachResize(el, note);
+    attachLongPressDetach(el, note);
+    if (note.type === "response") attachSelectionBreakout(el, note);
     const rootId = rootOf(note.id);
     applyFocus(el, rootId);
     attachFocusClick(el, rootId);
@@ -504,7 +559,8 @@ function buildOrbits(layer, pos, cards) {
 // inline input (Enter submits, Esc cancels); the ask pill opens the reply path.
 function buildOrbitPill(note, move, spent, dimmed) {
   const pill = document.createElement("div");
-  pill.className = "orbit-move" + (move.ask ? " ask" : "") + (spent ? " spent" : "") + (dimmed ? " dimmed" : "");
+  pill.className = "orbit-move" + (move.ask ? " ask" : "") + (move.breakout ? " breakout" : "")
+    + (spent ? " spent" : "") + (dimmed ? " dimmed" : "");
 
   const label = document.createElement("button");
   label.className = "orbit-label";
@@ -535,7 +591,8 @@ function buildOrbitPill(note, move, spent, dimmed) {
   field.addEventListener("keydown", (e) => {
     e.stopPropagation();
     if (e.key === "Enter" && field.value.trim()) {
-      exploreFromResponse(note.id, move, field.value.trim());
+      if (move.breakout) breakOutTerm(note.id, field.value.trim());
+      else exploreFromResponse(note.id, move, field.value.trim());
     } else if (e.key === "Escape") {
       pill.classList.remove("open");
     }
@@ -575,6 +632,15 @@ function drawWires(svg, pos, cards, orbitPos) {
       const ay = via ? via.y : cp.y;
       wire(ax, ay, kp.x, kp.y, "wire");
     });
+  });
+
+  // Faint dashed origin links: source response → a broken-out root.
+  notes.forEach((note) => {
+    if (!note.origin_id) return;
+    const src = pos[note.origin_id], dst = pos[note.id];
+    if (!src || !dst) return;
+    const sw = cards[note.origin_id] ? cards[note.origin_id].offsetWidth : 290;
+    wire(src.x + sw, src.y, dst.x, dst.y, "wire-origin");
   });
 }
 
@@ -683,6 +749,91 @@ function attachResize(el, note) {
     document.addEventListener("mouseup", up);
   });
 }
+
+// Long-press a card's header (~400ms) to UNLINK it: the card "lifts" (armed
+// cue), and releasing while armed detaches the node + its subtree into a fresh
+// standalone root (no origin link; context-before dropped). A normal quick press
+// or a press that moves early (a pan) does nothing. Already-root nodes are skipped.
+const LONG_PRESS_MS = 400;
+function attachLongPressDetach(el, note) {
+  const header = el.querySelector(".note-header");
+  if (!header) return;
+  let timer = null, armed = false, sx = 0, sy = 0;
+
+  header.addEventListener("mousedown", (e) => {
+    if (e.button !== 0) return;
+    if (e.target.closest("button, input, textarea, select, .resize-handle")) return;
+    if (!note.parent_id) return; // already a forest root (incl. break-out roots) — nothing to unlink
+    e.preventDefault(); // don't begin a native text selection during the hold
+    sx = e.clientX; sy = e.clientY; armed = false;
+    timer = setTimeout(() => { armed = true; el.classList.add("lift"); }, LONG_PRESS_MS);
+
+    const move = (ev) => {
+      // Moving before the hold completes = not a detach (treat as a pan/cancel).
+      if (!armed && (Math.abs(ev.clientX - sx) > 6 || Math.abs(ev.clientY - sy) > 6)) cancel();
+    };
+    const up = () => {
+      clearTimeout(timer);
+      document.removeEventListener("mousemove", move);
+      document.removeEventListener("mouseup", up);
+      if (armed) {
+        el.classList.remove("lift");
+        // Suppress the trailing click so focus mode doesn't re-select on detach.
+        wasDragging = true;
+        setTimeout(() => { wasDragging = false; }, 0);
+        detachToRoot(note.id); // unlink
+      }
+    };
+    const cancel = () => {
+      clearTimeout(timer); armed = false; el.classList.remove("lift");
+      document.removeEventListener("mousemove", move);
+      document.removeEventListener("mouseup", up);
+    };
+    document.addEventListener("mousemove", move);
+    document.addEventListener("mouseup", up);
+  });
+}
+
+// Select text inside a response → a floating "break out" bubble appears; clicking
+// it breaks the selected term out into a fresh tree (with a dashed origin link).
+function attachSelectionBreakout(el, note) {
+  const body = el.querySelector(".response-content");
+  if (!body) return;
+  body.addEventListener("mouseup", (e) => {
+    e.stopPropagation();
+    const sel = window.getSelection();
+    const text = (sel && sel.toString() || "").trim();
+    if (!text || text.length > 60) { hideBreakoutBubble(); return; }
+    showBreakoutBubble(note.id, text, e.clientX, e.clientY);
+  });
+}
+
+// The break-out bubble is a single floating element positioned in screen space.
+let breakoutBubble = null;
+function showBreakoutBubble(sourceId, term, clientX, clientY) {
+  hideBreakoutBubble();
+  const b = document.createElement("div");
+  b.id = "breakout-bubble";
+  b.textContent = `↗ break out “${term.length > 24 ? term.slice(0, 24) + "…" : term}”`;
+  b.style.left = `${clientX}px`;
+  b.style.top = `${clientY - 40}px`;
+  b.addEventListener("mousedown", (e) => {
+    e.stopPropagation();
+    e.preventDefault();
+    breakOutTerm(sourceId, term);
+    hideBreakoutBubble();
+    window.getSelection().removeAllRanges();
+  });
+  document.body.appendChild(b);
+  breakoutBubble = b;
+}
+function hideBreakoutBubble() {
+  if (breakoutBubble) { breakoutBubble.remove(); breakoutBubble = null; }
+}
+// Dismiss the bubble on any click that isn't on it.
+document.addEventListener("mousedown", (e) => {
+  if (breakoutBubble && !e.target.closest("#breakout-bubble")) hideBreakoutBubble();
+});
 
 // ── Toolbar buttons ───────────────────────────────────────────
 
