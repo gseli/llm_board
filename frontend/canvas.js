@@ -10,6 +10,68 @@ let activeGroupId = null;  // dataset id of the focused group (chain root id, or
 const canvas = document.getElementById("canvas");
 const saveStatus = document.getElementById("save-status");
 
+// ── Camera ────────────────────────────────────────────────────
+// The canvas is a transform-driven "world" layer; `cam` is the view.
+// Screen → world: worldX = (screenX - cam.x) / cam.k. World deltas under a
+// scaled view are screenΔ / cam.k (used by drag/resize so they track the cursor).
+// View-only — never persisted to board JSON.
+const cam = { x: 0, y: 0, k: 1 };
+const MIN_K = 0.2;
+const MAX_K = 2.5;
+
+function applyCamera() {
+  canvas.style.transform = `translate(${cam.x}px, ${cam.y}px) scale(${cam.k})`;
+  const label = document.getElementById("zoom-level");
+  if (label) label.textContent = `${Math.round(cam.k * 100)}%`;
+}
+
+// Zoom keeping the screen point (px, py) — viewport-relative — fixed under the cursor.
+function zoomAt(px, py, nextK) {
+  nextK = Math.min(MAX_K, Math.max(MIN_K, nextK));
+  const wx = (px - cam.x) / cam.k;
+  const wy = (py - cam.y) / cam.k;
+  cam.k = nextK;
+  cam.x = px - wx * cam.k;
+  cam.y = py - wy * cam.k;
+  applyCamera();
+}
+
+function viewportCenter() {
+  const r = document.getElementById("canvas-container").getBoundingClientRect();
+  return { x: r.width / 2, y: r.height / 2 };
+}
+
+// Frame all content. Measures rendered element bounds in world space (their
+// left/top/offset sizes are world units since the parent is the transform layer).
+function fitAll() {
+  // Measure only rendered note content (standalone notes + chain groups), not any
+  // other layers that may live inside the world (e.g. a future SVG wires layer).
+  const els = [...canvas.querySelectorAll(":scope > .note, :scope > [data-group-id]")];
+  const r = document.getElementById("canvas-container").getBoundingClientRect();
+  if (!els.length) {
+    cam.x = 0; cam.y = 0; cam.k = 1;
+    applyCamera();
+    return;
+  }
+  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+  els.forEach((el) => {
+    const x = el.offsetLeft, y = el.offsetTop;
+    minX = Math.min(minX, x);
+    minY = Math.min(minY, y);
+    maxX = Math.max(maxX, x + el.offsetWidth);
+    maxY = Math.max(maxY, y + el.offsetHeight);
+  });
+  const pad = 80;
+  const k = Math.min(
+    MAX_K,
+    Math.max(MIN_K, Math.min((r.width - pad * 2) / (maxX - minX), (r.height - pad * 2) / (maxY - minY)))
+  );
+  cam.k = k;
+  cam.x = (r.width - (maxX + minX) * k) / 2;
+  cam.y = (r.height - (maxY + minY) * k) / 2;
+  applyCamera();
+}
+
 // ── Persistence ──────────────────────────────────────────────
 
 async function loadBoard() {
@@ -65,15 +127,17 @@ function generateId() {
 }
 
 function addNote(type, extra = {}) {
-  const container = document.getElementById("canvas-container");
-  const scrollX = container.scrollLeft + 80;
-  const scrollY = container.scrollTop + 80;
+  // Place near the viewport's top-left in WORLD coords (inverse camera transform),
+  // so a new note lands on-screen regardless of pan/zoom.
+  const r = document.getElementById("canvas-container").getBoundingClientRect();
+  const worldX = (r.width * 0.18 - cam.x) / cam.k;
+  const worldY = (r.height * 0.18 - cam.y) / cam.k;
 
   const note = {
     id: generateId(),
     type,
-    x: scrollX + Math.random() * 60,
-    y: scrollY + Math.random() * 40,
+    x: worldX + Math.random() * 60,
+    y: worldY + Math.random() * 40,
     content: "",
     prompt_template: "explain_term",
     parent_id: null,
@@ -403,7 +467,8 @@ function attachDrag(handle, container, note, onMove) {
 
     function move(e) {
       if (Math.abs(e.clientX - startX) > 3 || Math.abs(e.clientY - startY) > 3) wasDragging = true;
-      onMove(origX + (e.clientX - startX), origY + (e.clientY - startY));
+      // Divide screen delta by zoom so the card tracks the cursor 1:1 at any scale.
+      onMove(origX + (e.clientX - startX) / cam.k, origY + (e.clientY - startY) / cam.k);
     }
     function up() {
       container.style.zIndex = "";
@@ -432,8 +497,9 @@ function attachResize(el, note) {
     const origH = el.offsetHeight;
 
     function move(e) {
-      const newW = Math.max(200, origW + (e.clientX - startX));
-      const newH = Math.max(120, origH + (e.clientY - startY));
+      // Divide screen delta by zoom so the handle tracks the cursor 1:1 at any scale.
+      const newW = Math.max(200, origW + (e.clientX - startX) / cam.k);
+      const newH = Math.max(120, origH + (e.clientY - startY) / cam.k);
       el.style.width  = `${newW}px`;
       el.style.height = `${newH}px`;
     }
@@ -475,41 +541,88 @@ document.getElementById("btn-focus").addEventListener("click", (e) => {
   renderAll();
 });
 
-// ── MMB pan ───────────────────────────────────────────────────
+// ── Camera controls: pan, zoom (buttons / Ctrl+wheel / keyboard) ──
+// Slice 1: pan stays on the MIDDLE mouse button so it never collides with
+// left-button card drag (cards are still freely draggable this slice). A later
+// slice moves pan to left-drag-on-empty-space once card drag is removed.
 
-(function initPan() {
+(function initCamera() {
   const container = document.getElementById("canvas-container");
   let panning = false;
-  let startX, startY, scrollX, scrollY;
+  let startX, startY, origCamX, origCamY;
 
   container.addEventListener("mousedown", (e) => {
-    if (e.button !== 1) return;
+    if (e.button !== 1) return; // middle button only
     e.preventDefault();
     panning = true;
     startX = e.clientX;
     startY = e.clientY;
-    scrollX = container.scrollLeft;
-    scrollY = container.scrollTop;
-    container.style.cursor = "grabbing";
+    origCamX = cam.x;
+    origCamY = cam.y;
+    container.classList.add("panning");
   });
 
   window.addEventListener("mousemove", (e) => {
     if (!panning) return;
-    container.scrollLeft = scrollX - (e.clientX - startX);
-    container.scrollTop  = scrollY - (e.clientY - startY);
+    cam.x = origCamX + (e.clientX - startX);
+    cam.y = origCamY + (e.clientY - startY);
+    applyCamera();
   });
 
   window.addEventListener("mouseup", (e) => {
     if (e.button !== 1) return;
     panning = false;
-    container.style.cursor = "";
+    container.classList.remove("panning");
   });
 
   container.addEventListener("auxclick", (e) => {
     if (e.button === 1) e.preventDefault();
   });
+
+  // Wheel: Ctrl/⌘ + wheel zooms toward the cursor (trackpad pinch maps here too);
+  // plain wheel pans the camera (vertical; Shift makes it horizontal). Plain-wheel
+  // pan replaces the native scroll lost when the container went overflow:hidden, so
+  // trackpad / no-middle-button users can still move around.
+  container.addEventListener("wheel", (e) => {
+    e.preventDefault();
+    if (e.ctrlKey || e.metaKey) {
+      const r = container.getBoundingClientRect();
+      const factor = e.deltaY < 0 ? 1.12 : 1 / 1.12;
+      zoomAt(e.clientX - r.left, e.clientY - r.top, cam.k * factor);
+    } else {
+      cam.x -= e.shiftKey ? e.deltaY : e.deltaX;
+      cam.y -= e.shiftKey ? 0 : e.deltaY;
+      applyCamera();
+    }
+  }, { passive: false });
 })();
+
+// Zoom UI buttons
+document.getElementById("zoom-in").addEventListener("click", () => {
+  const c = viewportCenter();
+  zoomAt(c.x, c.y, cam.k * 1.25);
+});
+document.getElementById("zoom-out").addEventListener("click", () => {
+  const c = viewportCenter();
+  zoomAt(c.x, c.y, cam.k / 1.25);
+});
+document.getElementById("zoom-fit").addEventListener("click", fitAll);
+
+// Keyboard: + / − zoom around center, 0 fits all. Ignored while typing.
+window.addEventListener("keydown", (e) => {
+  if (e.target.tagName === "INPUT" || e.target.tagName === "TEXTAREA") return;
+  if (e.key === "+" || e.key === "=") {
+    const c = viewportCenter();
+    zoomAt(c.x, c.y, cam.k * 1.25);
+  } else if (e.key === "-" || e.key === "_") {
+    const c = viewportCenter();
+    zoomAt(c.x, c.y, cam.k / 1.25);
+  } else if (e.key === "0") {
+    fitAll();
+  }
+});
 
 // ── Boot ──────────────────────────────────────────────────────
 
-loadBoard();
+applyCamera();
+loadBoard().then(() => fitAll());
