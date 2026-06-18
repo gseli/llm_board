@@ -240,14 +240,9 @@ function buildHistory(responseNoteId) {
 function replyToResponse(responseNoteId) {
   const responseNote = notes.find((n) => n.id === responseNoteId);
   if (!responseNote) return;
-
-  // Don't allow reply while response is loading
   if (responseNote.loading) return;
 
-  // Don't allow a second follow-up if one already exists
-  const alreadyHasFollowUp = notes.some((n) => n.parent_id === responseNoteId && n.type === "prompt");
-  if (alreadyHasFollowUp) return;
-
+  // Free forking: a response can have many follow-ups. No one-child guard.
   const history = buildHistory(responseNoteId);
   const threadId = responseNote.thread_id || responseNote.parent_id;
 
@@ -255,27 +250,17 @@ function replyToResponse(responseNoteId) {
     parent_id: responseNoteId,
     thread_id: threadId,
     conversation_context: history,
-    x: responseNote.x,
-    y: 0, // position managed by renderChain
+    prompt_template: null, // free-text reply — not an explore move (no spent/orbit match)
   });
 
   renderAll();
 }
 
-// One-click explore: build the move's prompt, create (or replace) the follow-up
-// prompt node under this response, and run it immediately — no separate compose step.
+// One-click explore: build the move's prompt, create a NEW follow-up branch under
+// this response (free forking — many children allowed), and run it in one step.
 function exploreFromResponse(responseNoteId, move, inputText) {
   const responseNote = notes.find((n) => n.id === responseNoteId);
   if (!responseNote || responseNote.loading) return;
-
-  // Replace any existing follow-up under this response (re-running a move overwrites,
-  // mirroring runPrompt's stale-response handling). deleteNote cleans up its subtree.
-  const existingFollowUp = notes.find((n) => n.parent_id === responseNoteId && n.type === "prompt");
-  if (existingFollowUp) {
-    const ids = new Set();
-    (function collect(id) { ids.add(id); notes.filter((n) => n.parent_id === id).forEach((c) => collect(c.id)); })(existingFollowUp.id);
-    notes = notes.filter((n) => !ids.has(n.id));
-  }
 
   const history = buildHistory(responseNoteId);
   const threadId = responseNote.thread_id || responseNote.parent_id;
@@ -286,8 +271,6 @@ function exploreFromResponse(responseNoteId, move, inputText) {
     conversation_context: history,
     prompt_template: move.id,
     content: inputText || "",
-    x: responseNote.x,
-    y: 0, // position managed by renderChain
   });
 
   runPrompt(followUp.id, move.build(inputText || ""));
@@ -346,10 +329,30 @@ async function runPrompt(parentId, builtPrompt) {
 // ── Rendering ─────────────────────────────────────────────────
 
 // Tidy-tree layout constants (world px).
-const COL_W = 330;     // horizontal distance between depth columns
+const COL_W = 470;     // horizontal distance between depth columns (room for the orbit gutter)
 const ROW_GAP = 28;    // vertical gap between sibling subtrees
 const TREE_GAP = 70;   // vertical gap between top-level trees
 const FALLBACK_H = 150; // assumed card height before it has been measured
+
+// Orbit (floating explore-move pills shown right of each response).
+const ORBIT_GAP = 14;  // gap between a response's right edge and its orbit pills
+const ORBIT_W = 132;   // orbit pill width
+const MOVE_H = 27;      // orbit pill height
+const ORBIT_VGAP = 6;  // vertical gap between orbit pills
+
+// The pills shown on a response: every explore move + an "ask your own" entry.
+// Shared by orbitHeightFor (layout reservation) and the renderer so they agree.
+function orbitMovesFor(note) {
+  const content = (note.content || "").trim();
+  // Eligible: a response that has a real answer (not loading, not an error).
+  if (note.type !== "response" || note.loading || !content || content.startsWith("Error:")) return [];
+  return [...EXPLORE_MOVES, { id: "__ask__", label: "↩ ask your own", ask: true }];
+}
+// Vertical space the orbit cluster needs, so a response reserves room for its pills.
+function orbitHeightFor(note) {
+  const m = orbitMovesFor(note).length;
+  return m ? m * MOVE_H + (m - 1) * ORBIT_VGAP : 0;
+}
 
 // A forest root is any note with no parent: a chain-root prompt or a standalone
 // text note. Each lays out as its own tree in its own vertical band.
@@ -378,11 +381,12 @@ function subtreeHeight(note, heights, seen = new Set()) {
   if (seen.has(note.id)) return 0;
   seen.add(note.id);
   const own = heights[note.id] || FALLBACK_H;
+  const orbit = orbitHeightFor(note); // 0 unless this is a response showing pills
   const kids = childrenOf(note.id);
-  if (!kids.length) return own;
+  if (!kids.length) return Math.max(own, orbit);
   const kidsTotal = kids.reduce((sum, k) => sum + subtreeHeight(k, heights, seen), 0)
     + ROW_GAP * (kids.length - 1);
-  return Math.max(own, kidsTotal);
+  return Math.max(own, kidsTotal, orbit);
 }
 
 // Assign world x/y to every node in a subtree. x by depth; y centers each node
@@ -418,6 +422,10 @@ function renderAll() {
   const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
   svg.id = "wires";
   canvas.appendChild(svg);
+  // Orbit layer (floating move pills) above the wires, below the cards.
+  const orbitLayer = document.createElement("div");
+  orbitLayer.id = "orbits";
+  canvas.appendChild(orbitLayer);
 
   // Pass 1: render every card at its column x (top temporary) so it's in the DOM
   // and measurable. Orphans (parent_id set but parent gone) get no column and are
@@ -445,7 +453,7 @@ function renderAll() {
     cards[note.id] = el;
   });
 
-  // Pass 2: measure real heights, recompute the forest, place cards + wires.
+  // Pass 2: measure real heights, recompute the forest, place cards.
   const heights = {};
   Object.entries(cards).forEach(([id, el]) => { heights[id] = el.offsetHeight; });
   const pos = computeForest(heights);
@@ -453,26 +461,119 @@ function renderAll() {
     const p = pos[id];
     if (p) { el.style.left = `${p.x}px`; el.style.top = `${p.y - el.offsetHeight / 2}px`; }
   });
-  drawWires(svg, pos, heights, cards);
+
+  // Build orbit pills (before wires, so wire routing can use pill positions).
+  const orbitPos = buildOrbits(orbitLayer, pos, cards);
+  drawWires(svg, pos, cards, orbitPos);
 }
 
-// Draw a curved wire from each parent's right edge to each child's left edge.
-// Anchors at each card's vertical center using its real width/height.
-function drawWires(svg, pos, heights, cards) {
+// Render the floating move pills for every eligible response. Returns
+// orbitPos[responseId][moveId] = {x, y} of each pill (left-center), used by
+// drawWires to route a forked child's wire through the move that spawned it.
+function buildOrbits(layer, pos, cards) {
+  const orbitPos = {};
+  notes.forEach((note) => {
+    const moves = orbitMovesFor(note);
+    if (!moves.length) return;
+    const p = pos[note.id];
+    if (!p) return;
+    const cardW = cards[note.id] ? cards[note.id].offsetWidth : 290;
+    // Clamp into the gutter so a user-widened card can't push pills into the
+    // child column at p.x + COL_W (which would overlap forked child cards).
+    const orbitX = Math.min(p.x + cardW + ORBIT_GAP, p.x + COL_W - ORBIT_W - ORBIT_GAP);
+    const blockH = moves.length * MOVE_H + (moves.length - 1) * ORBIT_VGAP;
+    const firstTop = p.y - blockH / 2;
+    // A move is "spent" if a child prompt under this response already used it.
+    const usedMoveIds = new Set(childrenOf(note.id).map((c) => c.prompt_template));
+    const dimmed = focusMode && rootOf(note.id) !== activeGroupId;
+    orbitPos[note.id] = {};
+
+    moves.forEach((move, i) => {
+      const top = firstTop + i * (MOVE_H + ORBIT_VGAP);
+      orbitPos[note.id][move.id] = { x: orbitX, y: top + MOVE_H / 2 };
+      const pill = buildOrbitPill(note, move, usedMoveIds.has(move.id), dimmed);
+      pill.style.left = `${orbitX}px`;
+      pill.style.top = `${top}px`;
+      layer.appendChild(pill);
+    });
+  });
+  return orbitPos;
+}
+
+// One orbit pill. Non-input moves fork on click; needsInput moves toggle a tiny
+// inline input (Enter submits, Esc cancels); the ask pill opens the reply path.
+function buildOrbitPill(note, move, spent, dimmed) {
+  const pill = document.createElement("div");
+  pill.className = "orbit-move" + (move.ask ? " ask" : "") + (spent ? " spent" : "") + (dimmed ? " dimmed" : "");
+
+  const label = document.createElement("button");
+  label.className = "orbit-label";
+  label.textContent = move.label;
+  pill.appendChild(label);
+
+  if (move.ask) {
+    label.addEventListener("click", (e) => { e.stopPropagation(); replyToResponse(note.id); });
+    return pill;
+  }
+  if (!move.needsInput) {
+    label.addEventListener("click", (e) => { e.stopPropagation(); exploreFromResponse(note.id, move, ""); });
+    return pill;
+  }
+
+  // needsInput: reveal an inline field on click.
+  const field = document.createElement("input");
+  field.type = "text";
+  field.className = "orbit-input";
+  field.placeholder = move.inputPlaceholder || "…";
+  pill.appendChild(field);
+  label.addEventListener("click", (e) => {
+    e.stopPropagation();
+    pill.classList.toggle("open");
+    if (pill.classList.contains("open")) field.focus();
+  });
+  field.addEventListener("click", (e) => e.stopPropagation());
+  field.addEventListener("keydown", (e) => {
+    e.stopPropagation();
+    if (e.key === "Enter" && field.value.trim()) {
+      exploreFromResponse(note.id, move, field.value.trim());
+    } else if (e.key === "Escape") {
+      pill.classList.remove("open");
+    }
+  });
+  return pill;
+}
+
+// Draw parent→child wires. A forked child routes through the spent orbit pill
+// of the move that spawned it (strong); other children anchor at the parent's
+// right edge. Also draws thin response→orbit tethers for every pill.
+function drawWires(svg, pos, cards, orbitPos) {
+  const wire = (ax, ay, zx, zy, cls) => {
+    const dx = Math.max(30, (zx - ax) / 2);
+    const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
+    path.setAttribute("d", `M ${ax} ${ay} C ${ax + dx} ${ay}, ${zx - dx} ${zy}, ${zx} ${zy}`);
+    path.setAttribute("class", cls);
+    svg.appendChild(path);
+  };
+
   notes.forEach((note) => {
     const cp = pos[note.id];
     if (!cp) return;
     const pw = cards[note.id] ? cards[note.id].offsetWidth : 290;
+    const myOrbits = orbitPos[note.id];
+
+    // Thin tethers: response right edge → each of its orbit pills.
+    if (myOrbits) {
+      Object.values(myOrbits).forEach((o) => wire(cp.x + pw, cp.y, o.x, o.y, "wire-orbit"));
+    }
+
     childrenOf(note.id).forEach((child) => {
       const kp = pos[child.id];
       if (!kp) return;
-      const ax = cp.x + pw, ay = cp.y;
-      const zx = kp.x, zy = kp.y;
-      const dx = Math.max(30, (zx - ax) / 2);
-      const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
-      path.setAttribute("d", `M ${ax} ${ay} C ${ax + dx} ${ay}, ${zx - dx} ${zy}, ${zx} ${zy}`);
-      path.setAttribute("class", "wire");
-      svg.appendChild(path);
+      // Route through the spent pill if this child came from an explore move.
+      const via = myOrbits && myOrbits[child.prompt_template];
+      const ax = via ? via.x + ORBIT_W : cp.x + pw;
+      const ay = via ? via.y : cp.y;
+      wire(ax, ay, kp.x, kp.y, "wire");
     });
   });
 }
@@ -526,7 +627,6 @@ function attachDrag(handle, container, note, onMove) {
 
   handle.addEventListener("mousedown", (e) => {
     if (e.target.classList.contains("btn-delete")) return;
-    if (e.target.classList.contains("btn-reply")) return;
     e.preventDefault();
     startX = e.clientX;
     startY = e.clientY;
