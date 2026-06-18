@@ -1,0 +1,307 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Mockup E — Horizontal Tree + Zoom</title>
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Lora:ital,wght@0,400;0,600;0,700;1,400&family=Source+Code+Pro:wght@400;500;600&display=swap');
+
+/* ============================================================
+   MOCKUP E — "HORIZONTAL TREE + ZOOM" (animated prototype)
+   On top of mockup D's rightward-growing tree:
+   - transform-based CAMERA (translate+scale on a #world layer) → real infinite zoomable space
+   - child cards GROW IN from their parent move-node (scale+fade)
+   - camera FOLLOWS the newest node (smooth ease, comfortable zoom)
+   - manual zoom: corner +/−/fit buttons · Ctrl/⌘+wheel toward cursor · keyboard +/−/0
+   - drag empty space to pan
+   Child answers are still pre-baked — this validates feel, not the LLM wiring.
+   ============================================================ */
+
+*, *::before, *::after { box-sizing:border-box; margin:0; padding:0; }
+:root {
+  --paper:#f6efe0; --card:#fffdf6; --paper-dark:#ece2cd;
+  --ink:#2b2417; --ink-soft:#6b5f47; --line:rgba(43,36,23,0.12);
+  --accent:#9a4032; --shadow:rgba(43,36,23,0.18);
+  --term-bg:#211c15; --term-ink:#e6dcb8; --term-accent:#d2785f;
+  --node:#c9a84a;
+}
+body { font-family:'Lora',Georgia,serif; background:var(--paper); color:var(--ink);
+  height:100vh; overflow:hidden; display:flex; flex-direction:column; }
+
+#toolbar { display:flex; align-items:center; gap:10px; padding:12px 22px; background:var(--paper-dark);
+  border-bottom:1px solid var(--line); flex-shrink:0; z-index:100; }
+#board-title { font-size:1.3rem; font-weight:700; letter-spacing:-0.5px; margin-right:8px; }
+#board-title em { font-style:italic; color:var(--accent); font-weight:400; }
+#toolbar button { font-family:'Source Code Pro',monospace; font-size:.72rem; font-weight:600;
+  text-transform:uppercase; letter-spacing:.07em; padding:7px 14px; border:1px solid var(--ink);
+  background:transparent; color:var(--ink); cursor:pointer; border-radius:3px; }
+#btn-new-prompt { background:var(--accent); color:var(--paper); border-color:var(--accent); }
+#hint { margin-left:auto; font-family:'Source Code Pro',monospace; font-size:.7rem; color:var(--accent); }
+
+/* ── viewport + camera world ── */
+#viewport { flex:1; position:relative; overflow:hidden; cursor:grab;
+  background:
+    radial-gradient(circle, rgba(43,36,23,0.06) 1px, transparent 1px) 0 0 / 26px 26px,
+    var(--paper); }
+#viewport.panning { cursor:grabbing; }
+#world { position:absolute; top:0; left:0; width:0; height:0;
+  transform-origin:0 0; will-change:transform; }
+#world.animate { transition:transform .55s cubic-bezier(.22,.61,.36,1); }
+#wires { position:absolute; left:-2000px; top:-2000px; width:8000px; height:6000px; pointer-events:none; overflow:visible; }
+
+/* ── cards ── */
+.node-card { position:absolute; width:280px; }
+.node-card.grow-in { animation:growIn .42s cubic-bezier(.18,.7,.3,1.1) both; }
+@keyframes growIn {
+  from { opacity:0; transform:scale(.55); }
+  to   { opacity:1; transform:scale(1); }
+}
+.inner { border:1px solid rgba(43,36,23,0.45); border-radius:4px;
+  box-shadow:0 2px 0 var(--shadow), 0 6px 14px -8px rgba(43,36,23,0.4);
+  background:var(--card); overflow:hidden; }
+.hd { display:flex; align-items:center; padding:8px 13px; user-select:none;
+  font-family:'Source Code Pro',monospace; font-size:.64rem; font-weight:600; letter-spacing:.13em;
+  text-transform:uppercase; border-bottom:1px solid var(--line); color:var(--ink-soft); }
+.hd .lbl { flex:1; }
+.bd { padding:12px 14px; }
+
+.node-prompt .hd { background:#f1e8d2; color:var(--accent); }
+.node-prompt .q { font-family:'Lora',serif; font-size:.95rem; font-weight:600; margin-bottom:10px; }
+.node-prompt .pc { display:flex; gap:8px; align-items:center; }
+.pill { flex:1; font-family:'Source Code Pro',monospace; font-size:.68rem; color:var(--ink-soft);
+  background:#faf4e6; border:1px solid var(--line); border-radius:18px; padding:4px 11px; }
+.pill .s { color:var(--accent); }
+.run { background:var(--accent); color:var(--paper); border:none; border-radius:3px; padding:6px 14px;
+  font-family:'Source Code Pro',monospace; font-size:.68rem; font-weight:600; text-transform:uppercase; cursor:pointer; }
+
+.node-response .inner { background:var(--term-bg); border-color:rgba(0,0,0,0.5); }
+.node-response .hd { background:#181410; color:var(--term-accent); border-bottom-color:rgba(230,220,184,0.1); }
+.node-response .hd::before { content:'▸ '; }
+.node-response .bd { font-family:'Source Code Pro',monospace; font-size:.78rem; line-height:1.6;
+  color:var(--term-ink); white-space:pre-wrap; }
+
+/* ── floating move nodes ── */
+.move-node { position:absolute; display:inline-flex; align-items:center; gap:5px;
+  background:var(--card); border:1px solid var(--node); color:var(--ink);
+  font-family:'Source Code Pro',monospace; font-size:.7rem; padding:5px 11px; border-radius:16px;
+  box-shadow:0 2px 6px -2px rgba(43,36,23,0.3); cursor:pointer; white-space:nowrap; transition:all .15s; }
+.move-node.grow-in { animation:growIn .35s cubic-bezier(.18,.7,.3,1.1) both; }
+.move-node .ico { color:var(--accent); font-weight:700; }
+.move-node:hover { background:var(--node); transform:scale(1.06); }
+.move-node.spent { opacity:.32; transform:scale(.9); box-shadow:none; }
+.move-node.spent:hover { opacity:.7; }
+.move-node.ask { border-color:var(--line); color:var(--ink-soft); }
+
+.hidden { display:none !important; }
+
+/* ── zoom controls ── */
+#zoom-ui { position:absolute; right:18px; bottom:18px; display:flex; flex-direction:column; gap:6px; z-index:50; }
+#zoom-ui button { width:38px; height:38px; border:1px solid var(--ink); background:var(--card); color:var(--ink);
+  font-family:'Source Code Pro',monospace; font-size:1rem; cursor:pointer; border-radius:5px;
+  box-shadow:0 2px 0 var(--shadow); display:flex; align-items:center; justify-content:center; transition:all .12s; }
+#zoom-ui button:hover { background:var(--ink); color:var(--paper); }
+#zoom-ui .fit { font-size:.6rem; font-weight:600; letter-spacing:.04em; }
+#zoom-level { text-align:center; font-family:'Source Code Pro',monospace; font-size:.62rem; color:var(--ink-soft); margin-top:2px; }
+
+#caption { position:fixed; bottom:14px; left:22px; font-family:'Source Code Pro',monospace; font-size:.72rem;
+  color:var(--ink-soft); background:var(--card); border:1px solid var(--line); padding:7px 13px; border-radius:4px; z-index:200; }
+</style>
+</head>
+<body>
+  <div id="toolbar">
+    <span id="board-title">the <em>note</em> board</span>
+    <button>+ text</button>
+    <button id="btn-new-prompt">+ prompt</button>
+    <button>focus</button>
+    <span id="hint">▸ click gold moves to grow · drag to pan · Ctrl/⌘+scroll or +/−/0 to zoom</span>
+  </div>
+
+  <div id="viewport">
+    <div id="world">
+      <svg id="wires"></svg>
+
+      <div class="node-card node-prompt" id="n-prompt" style="left:40px; top:300px;">
+        <div class="inner">
+          <div class="hd"><span class="lbl">prompt</span></div>
+          <div class="bd"><div class="q">Shannon entropy</div>
+            <div class="pc"><span class="pill"><span class="s">◎</span> explain term</span><button class="run">Run ▶</button></div></div>
+        </div>
+      </div>
+
+      <div class="node-card node-response" id="n-resp" style="left:400px; top:290px;">
+        <div class="inner"><div class="hd"><span class="lbl">response</span></div>
+          <div class="bd">Shannon entropy measures the average uncertainty in a message source — the bits you'd need, on average, to encode the next symbol.</div></div>
+      </div>
+
+      <div class="move-node" id="m-more"    style="left:710px; top:250px;"><span class="ico">→</span> more</div>
+      <div class="move-node" id="m-why"     style="left:710px; top:292px;"><span class="ico">?</span> why</div>
+      <div class="move-node" id="m-example" style="left:710px; top:334px;"><span class="ico">◈</span> example</div>
+      <div class="move-node" id="m-relate"  style="left:710px; top:376px;"><span class="ico">⇄</span> relate…</div>
+      <div class="move-node" id="m-term"    style="left:710px; top:418px;"><span class="ico">⊕</span> term…</div>
+      <div class="move-node ask" id="m-ask"  style="left:710px; top:460px;"><span class="ico">↩</span> ask your own</div>
+
+      <!-- pre-baked children -->
+      <div class="node-card node-response hidden" id="b-why" style="left:900px; top:230px;">
+        <div class="inner"><div class="hd"><span class="lbl">response</span></div>
+        <div class="bd">Because predictable sources repeat — repetition is compressible. The more uniform the distribution, the more bits each symbol genuinely carries.</div></div>
+      </div>
+      <div class="node-card node-response hidden" id="b-example" style="left:900px; top:520px;">
+        <div class="inner"><div class="hd"><span class="lbl">response</span></div>
+        <div class="bd">A fair coin: 1 bit per flip (max uncertainty). A coin landing heads 99% of the time: ~0.08 bits — you can almost always guess right.</div></div>
+      </div>
+      <div class="node-card node-response hidden" id="b-more" style="left:900px; top:810px;">
+        <div class="inner"><div class="hd"><span class="lbl">response</span></div>
+        <div class="bd">It's the floor of lossless compression (Huffman, arithmetic coding): you cannot compress below the entropy rate.</div></div>
+      </div>
+
+      <!-- grandchild moves for the why branch -->
+      <div class="move-node hidden" id="m2-why" style="left:1210px; top:212px;"><span class="ico">?</span> why</div>
+      <div class="move-node hidden" id="m2-ex"  style="left:1210px; top:254px;"><span class="ico">◈</span> example</div>
+      <div class="move-node ask hidden" id="m2-ask" style="left:1210px; top:296px;"><span class="ico">↩</span> ask</div>
+    </div>
+
+    <div id="zoom-ui">
+      <button id="z-in"  title="Zoom in (+)">+</button>
+      <button id="z-out" title="Zoom out (−)">−</button>
+      <button id="z-fit" class="fit" title="Fit all (0)">FIT</button>
+      <div id="zoom-level">100%</div>
+    </div>
+  </div>
+  <div id="caption">Mockup E · animated tree + zoomable infinite space. Camera follows new nodes; manual zoom via buttons / Ctrl+scroll / keys.</div>
+
+<script>
+const vp    = document.getElementById('viewport');
+const world = document.getElementById('world');
+const svg   = document.getElementById('wires');
+const zlabel= document.getElementById('zoom-level');
+
+// ── camera ──────────────────────────────────────────────
+const cam = { x: 0, y: 0, k: 1 };           // world translate + scale
+const MIN_K = 0.25, MAX_K = 2.5;
+function apply(animate){
+  world.classList.toggle('animate', !!animate);
+  world.style.transform = `translate(${cam.x}px, ${cam.y}px) scale(${cam.k})`;
+  zlabel.textContent = Math.round(cam.k*100) + '%';
+}
+// zoom keeping a screen point fixed (px,py = screen coords)
+function zoomAt(px, py, nextK, animate){
+  nextK = Math.min(MAX_K, Math.max(MIN_K, nextK));
+  const wx = (px - cam.x) / cam.k;          // world point under cursor
+  const wy = (py - cam.y) / cam.k;
+  cam.k = nextK;
+  cam.x = px - wx * cam.k;
+  cam.y = py - wy * cam.k;
+  apply(animate);
+}
+function vpCenter(){ const r = vp.getBoundingClientRect(); return { x:r.width/2, y:r.height/2 }; }
+
+// ── camera follows a node: center it at a comfortable zoom ──
+function followNode(el, comfyK){
+  const r = vp.getBoundingClientRect();
+  // node position in WORLD coords (its left/top are world px; size is layout px)
+  const nx = el.offsetLeft + el.offsetWidth/2;
+  const ny = el.offsetTop  + el.offsetHeight/2;
+  const k = comfyK != null ? comfyK : Math.min(cam.k, 1); // don't zoom IN past comfortable; keep readable
+  cam.k = Math.min(MAX_K, Math.max(MIN_K, k));
+  cam.x = r.width*0.62 - nx * cam.k;        // bias slightly left so the new node sits right-of-center
+  cam.y = r.height*0.5  - ny * cam.k;
+  apply(true);
+}
+
+// ── wires (drawn in world space; the svg lives inside #world, offset -2000) ──
+const SVG_OFF = 2000;
+const wires = [];
+function addWire(from,to,cls){ wires.push({from,to,cls}); draw(); }
+function nodeAnchor(el, side){
+  const x = side==='r' ? el.offsetLeft+el.offsetWidth : el.offsetLeft;
+  const y = el.offsetTop + el.offsetHeight/2;
+  return { x:x+SVG_OFF, y:y+SVG_OFF };
+}
+function draw(){
+  svg.innerHTML='';
+  wires.forEach(w=>{
+    const f=document.getElementById(w.from), t=document.getElementById(w.to);
+    if(!f||!t||f.classList.contains('hidden')||t.classList.contains('hidden')) return;
+    const a=nodeAnchor(f,'r'), z=nodeAnchor(t,'l');
+    const dx=Math.max(40,(z.x-a.x)/2);
+    const p=document.createElementNS('http://www.w3.org/2000/svg','path');
+    p.setAttribute('d',`M ${a.x} ${a.y} C ${a.x+dx} ${a.y}, ${z.x-dx} ${z.y}, ${z.x} ${z.y}`);
+    p.setAttribute('fill','none');
+    p.setAttribute('stroke', w.cls==='strong' ? '#9a4032' : 'rgba(43,36,23,0.35)');
+    p.setAttribute('stroke-width', w.cls==='strong' ? '2' : '1.5');
+    svg.appendChild(p);
+  });
+}
+addWire('n-prompt','n-resp','strong');
+['m-more','m-why','m-example','m-relate','m-term','m-ask'].forEach(m=>addWire('n-resp',m,'thin'));
+
+// ── grow a branch ──
+function activate(moveId, childId, grandkids){
+  const move=document.getElementById(moveId), child=document.getElementById(childId);
+  if(!child || child.classList.contains('shown')) return;
+  child.classList.remove('hidden'); child.classList.add('shown','grow-in');
+  move.classList.add('spent');
+  addWire(moveId, childId, 'strong');
+  (grandkids||[]).forEach((g,i)=>{
+    const gk=document.getElementById(g);
+    setTimeout(()=>{ gk.classList.remove('hidden'); gk.classList.add('grow-in'); addWire(childId,g,'thin'); }, 120+i*60);
+  });
+  // camera follows the new child
+  setTimeout(()=>followNode(child), 60);
+}
+document.getElementById('m-why').addEventListener('click', ()=>activate('m-why','b-why',['m2-why','m2-ex','m2-ask']));
+document.getElementById('m-example').addEventListener('click', ()=>activate('m-example','b-example'));
+document.getElementById('m-more').addEventListener('click', ()=>activate('m-more','b-more'));
+
+// ── manual zoom: buttons ──
+document.getElementById('z-in').onclick  = ()=>{ const c=vpCenter(); zoomAt(c.x,c.y,cam.k*1.25,true); };
+document.getElementById('z-out').onclick = ()=>{ const c=vpCenter(); zoomAt(c.x,c.y,cam.k/1.25,true); };
+document.getElementById('z-fit').onclick = fitAll;
+
+function fitAll(){
+  const cards=[...document.querySelectorAll('.node-card:not(.hidden), .move-node:not(.hidden)')];
+  let minX=1e9,minY=1e9,maxX=-1e9,maxY=-1e9;
+  cards.forEach(el=>{ minX=Math.min(minX,el.offsetLeft); minY=Math.min(minY,el.offsetTop);
+    maxX=Math.max(maxX,el.offsetLeft+el.offsetWidth); maxY=Math.max(maxY,el.offsetTop+el.offsetHeight); });
+  const r=vp.getBoundingClientRect(), pad=80;
+  const k=Math.min(MAX_K, Math.max(MIN_K, Math.min((r.width-pad*2)/(maxX-minX), (r.height-pad*2)/(maxY-minY))));
+  cam.k=k;
+  cam.x=(r.width  - (maxX+minX)*k)/2;
+  cam.y=(r.height - (maxY+minY)*k)/2;
+  apply(true);
+}
+
+// ── manual zoom: Ctrl/⌘ + wheel toward cursor ──
+vp.addEventListener('wheel',(e)=>{
+  if(!(e.ctrlKey||e.metaKey)) return;       // plain scroll left for pan-by-trackpad if desired
+  e.preventDefault();
+  const r=vp.getBoundingClientRect();
+  const factor = e.deltaY<0 ? 1.12 : 1/1.12;
+  zoomAt(e.clientX-r.left, e.clientY-r.top, cam.k*factor, false);
+},{passive:false});
+
+// ── keyboard: + − 0 ──
+window.addEventListener('keydown',(e)=>{
+  if(e.target.tagName==='INPUT'||e.target.tagName==='TEXTAREA') return;
+  if(e.key==='+'||e.key==='='){ const c=vpCenter(); zoomAt(c.x,c.y,cam.k*1.25,true); }
+  else if(e.key==='-'||e.key==='_'){ const c=vpCenter(); zoomAt(c.x,c.y,cam.k/1.25,true); }
+  else if(e.key==='0'){ fitAll(); }
+});
+
+// ── pan: drag empty viewport ──
+let panning=false, sx=0, sy=0, ox=0, oy=0;
+vp.addEventListener('mousedown',(e)=>{
+  if(e.target.closest('.move-node, .run, #zoom-ui')) return;  // let interactive bits work
+  panning=true; vp.classList.add('panning'); sx=e.clientX; sy=e.clientY; ox=cam.x; oy=cam.y;
+});
+window.addEventListener('mousemove',(e)=>{
+  if(!panning) return; cam.x=ox+(e.clientX-sx); cam.y=oy+(e.clientY-sy); apply(false);
+});
+window.addEventListener('mouseup',()=>{ panning=false; vp.classList.remove('panning'); });
+
+// initial: fit after fonts settle
+setTimeout(()=>{ draw(); fitAll(); }, 120);
+</script>
+</body>
+</html>

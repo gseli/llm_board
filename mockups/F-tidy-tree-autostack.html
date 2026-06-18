@@ -1,0 +1,391 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Mockup F — Tidy-Tree Auto-Stack</title>
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Lora:ital,wght@0,400;0,600;0,700;1,400&family=Source+Code+Pro:wght@400;500;600&display=swap');
+
+/* ============================================================
+   MOCKUP F — "TIDY-TREE AUTO-STACK" (the real layout engine)
+   Real generated tree (no pre-baked positions). On every fork:
+   - a tidy-tree layout runs: each node reserves vertical space for its
+     WHOLE subtree, so deep/forking branches push siblings apart → no overlap
+   - all nodes GLIDE to their new computed positions (reflow animation)
+   - new child + its move-orbit GROW IN
+   - CALM camera: no auto-follow. Only nudges into view if the new node
+     would land off-screen; otherwise stays put. Manual zoom unchanged.
+   ============================================================ */
+
+*, *::before, *::after { box-sizing:border-box; margin:0; padding:0; }
+:root {
+  --paper:#f6efe0; --card:#fffdf6; --paper-dark:#ece2cd;
+  --ink:#2b2417; --ink-soft:#6b5f47; --line:rgba(43,36,23,0.12);
+  --accent:#9a4032; --shadow:rgba(43,36,23,0.18);
+  --term-bg:#211c15; --term-ink:#e6dcb8; --term-accent:#d2785f;
+  --node:#c9a84a;
+}
+body { font-family:'Lora',Georgia,serif; background:var(--paper); color:var(--ink);
+  height:100vh; overflow:hidden; display:flex; flex-direction:column; }
+
+#toolbar { display:flex; align-items:center; gap:10px; padding:12px 22px; background:var(--paper-dark);
+  border-bottom:1px solid var(--line); flex-shrink:0; z-index:100; }
+#board-title { font-size:1.3rem; font-weight:700; letter-spacing:-0.5px; margin-right:8px; }
+#board-title em { font-style:italic; color:var(--accent); font-weight:400; }
+#toolbar button { font-family:'Source Code Pro',monospace; font-size:.72rem; font-weight:600;
+  text-transform:uppercase; letter-spacing:.07em; padding:7px 14px; border:1px solid var(--ink);
+  background:transparent; color:var(--ink); cursor:pointer; border-radius:3px; }
+#btn-reset { background:var(--accent); color:var(--paper); border-color:var(--accent); }
+#hint { margin-left:auto; font-family:'Source Code Pro',monospace; font-size:.7rem; color:var(--accent); }
+
+#viewport { flex:1; position:relative; overflow:hidden; cursor:grab;
+  background: radial-gradient(circle, rgba(43,36,23,0.06) 1px, transparent 1px) 0 0 / 26px 26px, var(--paper); }
+#viewport.panning { cursor:grabbing; }
+#world { position:absolute; top:0; left:0; transform-origin:0 0; will-change:transform; }
+#world.cam-animate { transition:transform .5s cubic-bezier(.22,.61,.36,1); }
+#wires { position:absolute; left:0; top:0; width:8000px; height:6000px; pointer-events:none; overflow:visible; }
+
+/* nodes glide between layouts */
+.card, .move {
+  position:absolute;
+  transition: left .45s cubic-bezier(.22,.61,.36,1), top .45s cubic-bezier(.22,.61,.36,1),
+              opacity .3s, transform .3s;
+}
+.card { width:260px; }
+.card .inner { border:1px solid rgba(43,36,23,0.45); border-radius:4px;
+  box-shadow:0 2px 0 var(--shadow), 0 6px 14px -8px rgba(43,36,23,0.4); background:var(--card); overflow:hidden; }
+.card .hd { display:flex; align-items:center; padding:7px 12px; user-select:none;
+  font-family:'Source Code Pro',monospace; font-size:.62rem; font-weight:600; letter-spacing:.13em;
+  text-transform:uppercase; border-bottom:1px solid var(--line); color:var(--ink-soft); }
+.card .hd .lbl { flex:1; }
+.card .bd { padding:11px 13px; }
+
+.card.prompt .hd { background:#f1e8d2; color:var(--accent); }
+.card.prompt .q { font-family:'Lora',serif; font-size:.92rem; font-weight:600; margin-bottom:9px; }
+.card.prompt .pc { display:flex; gap:7px; align-items:center; }
+.pill { flex:1; font-family:'Source Code Pro',monospace; font-size:.66rem; color:var(--ink-soft);
+  background:#faf4e6; border:1px solid var(--line); border-radius:18px; padding:4px 10px; }
+.pill .s { color:var(--accent); }
+.run { background:var(--accent); color:var(--paper); border:none; border-radius:3px; padding:5px 12px;
+  font-family:'Source Code Pro',monospace; font-size:.64rem; font-weight:600; text-transform:uppercase; cursor:pointer; }
+
+.card.response .inner { background:var(--term-bg); border-color:rgba(0,0,0,0.5); }
+.card.response .hd { background:#181410; color:var(--term-accent); border-bottom-color:rgba(230,220,184,0.1); }
+.card.response .hd::before { content:'▸ '; }
+.card.response .bd { font-family:'Source Code Pro',monospace; font-size:.74rem; line-height:1.55;
+  color:var(--term-ink); white-space:pre-wrap; }
+
+.move { display:inline-flex; align-items:center; gap:5px; background:var(--card);
+  border:1px solid var(--node); color:var(--ink); font-family:'Source Code Pro',monospace; font-size:.68rem;
+  padding:4px 10px; border-radius:15px; box-shadow:0 2px 6px -2px rgba(43,36,23,0.3); cursor:pointer; white-space:nowrap; }
+.move .ico { color:var(--accent); font-weight:700; }
+.move:hover { background:var(--node); transform:scale(1.06); }
+.move.spent { opacity:.3; transform:scale(.88); box-shadow:none; }
+.move.spent:hover { opacity:.65; transform:scale(.92); }
+.move.ask { border-color:var(--line); color:var(--ink-soft); }
+
+.born { animation:born .4s cubic-bezier(.18,.7,.3,1.1) both; }
+@keyframes born { from { opacity:0; transform:scale(.5); } to { opacity:1; transform:scale(1); } }
+
+#zoom-ui { position:absolute; right:18px; bottom:18px; display:flex; flex-direction:column; gap:6px; z-index:50; }
+#zoom-ui button { width:38px; height:38px; border:1px solid var(--ink); background:var(--card); color:var(--ink);
+  font-family:'Source Code Pro',monospace; font-size:1rem; cursor:pointer; border-radius:5px;
+  box-shadow:0 2px 0 var(--shadow); display:flex; align-items:center; justify-content:center; }
+#zoom-ui button:hover { background:var(--ink); color:var(--paper); }
+#zoom-ui .fit { font-size:.58rem; font-weight:600; }
+#zoom-level { text-align:center; font-family:'Source Code Pro',monospace; font-size:.62rem; color:var(--ink-soft); margin-top:2px; }
+
+#caption { position:fixed; bottom:14px; left:22px; font-family:'Source Code Pro',monospace; font-size:.72rem;
+  color:var(--ink-soft); background:var(--card); border:1px solid var(--line); padding:7px 13px; border-radius:4px; z-index:200; max-width:60vw; }
+</style>
+</head>
+<body>
+  <div id="toolbar">
+    <span id="board-title">the <em>note</em> board</span>
+    <button id="btn-reset">↺ reset tree</button>
+    <span id="hint">▸ click gold moves to fork · watch siblings push apart (tidy-tree) · drag to pan · Ctrl+scroll / +−0 zoom</span>
+  </div>
+
+  <div id="viewport">
+    <div id="world">
+      <svg id="wires"></svg>
+      <!-- cards + moves injected by JS -->
+    </div>
+    <div id="zoom-ui">
+      <button id="z-in" title="Zoom in (+)">+</button>
+      <button id="z-out" title="Zoom out (−)">−</button>
+      <button id="z-fit" class="fit" title="Fit all (0)">FIT</button>
+      <div id="zoom-level">100%</div>
+    </div>
+  </div>
+  <div id="caption">Mockup F · real tidy-tree auto-stack — each subtree reserves its own vertical band; forks reflow siblings, never overlap. Calm camera (nudges only if off-screen).</div>
+
+<script>
+// ──────────────────────────────────────────────────────────────
+// DATA MODEL — a real tree. Each node: {id,type,kind,text,children,moveLabel}
+// kind: 'prompt' | 'response' ; a response owns a set of move-orbit buttons.
+// Forking a move creates: a spent move-node (waypoint) → a child response.
+// ──────────────────────────────────────────────────────────────
+let uid = 0;
+const nid = () => 'n' + (++uid);
+
+// Canned answers so the prototype feels real without an LLM.
+const MOVE_DEFS = [
+  { id:'more',    ico:'→', label:'more',         answer:(t)=>`More on ${t}: additional properties, edge cases, and where it shows up in practice.` },
+  { id:'why',     ico:'?', label:'why',          answer:(t)=>`Why ${t} holds: the underlying mechanism is that structure/repetition is what makes things predictable.` },
+  { id:'example', ico:'◈', label:'example',      answer:(t)=>`Concrete example of ${t}: a small, vivid case you can picture — e.g. a coin flip, a dice roll, a sentence.` },
+  { id:'relate',  ico:'⇄', label:'relate…',      answer:(t)=>`How ${t} relates to a neighbour idea: what's shared, and the one axis where they diverge.` },
+  { id:'term',    ico:'⊕', label:'term…',        answer:(t)=>`Definition of a sub-term inside ${t}, and how it plugs back into the bigger picture.` },
+];
+
+function makeResponse(text, topic){
+  return { id:nid(), kind:'response', text, topic, children:[], moves:freshMoves() };
+}
+function freshMoves(){
+  return MOVE_DEFS.map(m => ({ ...m, spent:false }))
+                  .concat([{ id:'ask', ico:'↩', label:'ask your own', ask:true, spent:false }]);
+}
+
+// root: prompt → response
+const root = { id:nid(), kind:'prompt', text:'Shannon entropy', topic:'Shannon entropy', children:[] };
+const rootResp = makeResponse('Shannon entropy measures the average uncertainty in a source — the bits needed, on average, to encode the next symbol.', 'entropy');
+root.children = [rootResp];
+
+// ──────────────────────────────────────────────────────────────
+// TIDY-TREE LAYOUT
+// Horizontal: x by depth (column). Vertical: each node gets a band sized
+// to its subtree leaf-count, and is centered on that band. Siblings stack
+// within the parent's band → subtrees never overlap.
+// We model each response's MOVE ORBIT as pseudo-leaves so the orbit also
+// reserves space (an un-forked response still needs room for its buttons).
+// ──────────────────────────────────────────────────────────────
+const COL_W   = 330;   // horizontal distance between columns
+const ROW_H   = 64;    // vertical unit per leaf slot
+const ORBIT_GAP = 300; // x offset from a response to its move orbit
+const MOVE_H  = 34;    // vertical spacing between orbit buttons
+
+const layout = {}; // id -> {x,y, leaves}
+
+// count leaves: a response with no live children counts its visible (un-spent or any) orbit
+function liveChildren(node){ return node.children; }
+
+function countLeaves(node){
+  const kids = liveChildren(node);
+  if(node.kind==='response'){
+    // reserve at least the orbit height (#moves) OR the children, whichever is taller
+    const orbitLeaves = node.moves.length; // each button ~ one slot
+    if(kids.length===0) return Math.max(1, orbitLeaves);
+    let sum=0; kids.forEach(k=>sum+=countLeaves(k));
+    return Math.max(sum, 1);
+  }
+  // prompt: passes through to its single response child
+  if(kids.length===0) return 1;
+  let sum=0; kids.forEach(k=>sum+=countLeaves(k));
+  return sum;
+}
+
+function assign(node, depth, top){
+  const leaves = countLeaves(node);
+  const x = depth * COL_W + 40;
+  const y = top + (leaves*ROW_H)/2;   // center node on its band
+  layout[node.id] = { x, y, leaves, depth };
+  let cursor = top;
+  liveChildren(node).forEach(k=>{
+    const kl = countLeaves(k);
+    assign(k, depth+1, cursor);
+    cursor += kl*ROW_H;
+  });
+}
+
+// ──────────────────────────────────────────────────────────────
+// RENDER — diff-free simple approach: ensure DOM nodes exist, then position.
+// ──────────────────────────────────────────────────────────────
+const world = document.getElementById('world');
+const svg = document.getElementById('wires');
+const els = {};   // id -> card element ; 'move:'+respId+':'+moveId -> move element
+const wires = []; // {fromXY:()=>, toXY:()=>}
+
+function ensureCard(node){
+  if(els[node.id]) return els[node.id];
+  const el = document.createElement('div');
+  el.className = 'card ' + node.kind + ' born';
+  el.dataset.id = node.id;
+  if(node.kind==='prompt'){
+    el.innerHTML = `<div class="inner"><div class="hd"><span class="lbl">prompt</span></div>
+      <div class="bd"><div class="q">${node.text}</div>
+      <div class="pc"><span class="pill"><span class="s">◎</span> explain term</span><button class="run">Run ▶</button></div></div></div>`;
+  } else {
+    el.innerHTML = `<div class="inner"><div class="hd"><span class="lbl">response</span></div>
+      <div class="bd">${node.text}</div></div>`;
+  }
+  world.appendChild(el);
+  els[node.id]=el;
+  return el;
+}
+
+function ensureMove(respNode, move){
+  const key = 'move:'+respNode.id+':'+move.id;
+  if(els[key]) return els[key];
+  const el = document.createElement('div');
+  el.className = 'move born' + (move.ask?' ask':'');
+  el.innerHTML = `<span class="ico">${move.ico}</span> ${move.label}`;
+  if(!move.ask){
+    el.addEventListener('click', (e)=>{ e.stopPropagation(); fork(respNode, move); });
+  }
+  world.appendChild(el);
+  els[key]=el;
+  return el;
+}
+
+function relayout(animate){
+  assign(root, 0, 40);
+
+  // position cards
+  function place(node){
+    const el = ensureCard(node);
+    const p = layout[node.id];
+    el.style.left = p.x+'px';
+    el.style.top  = p.y - el.offsetHeight/2 + 'px';
+    // responses: position their move orbit to the right, vertically centered
+    if(node.kind==='response'){
+      const liveMoves = node.moves;
+      const cx = p.x + COL_W*0; // anchor; orbit placed at fixed ORBIT_GAP from card right
+      const orbitX = p.x + 260 /*card w*/ + (ORBIT_GAP-260>40?0:0) + 60;
+      const totalH = (liveMoves.length-1)*MOVE_H;
+      liveMoves.forEach((m,i)=>{
+        const me = ensureMove(node, m);
+        me.classList.toggle('spent', !!m.spent);
+        me.style.left = orbitX + 'px';
+        me.style.top  = (p.y - totalH/2 + i*MOVE_H - 12) + 'px';
+      });
+    }
+    node.children.forEach(place);
+  }
+  place(root);
+  drawWires();
+}
+
+// wires: prompt→resp (strong), resp→each move (thin), spent move→child resp (strong)
+function cardAnchor(node, side){
+  const el = els[node.id]; const p = layout[node.id];
+  const w = el.offsetWidth, h = el.offsetHeight;
+  return { x: side==='r'? p.x+w : p.x, y: p.y };
+}
+function moveAnchor(respId, move, side){
+  const el = els['move:'+respId+':'+move.id];
+  const x = parseFloat(el.style.left), y = parseFloat(el.style.top);
+  return { x: side==='r'? x+el.offsetWidth : x, y: y + el.offsetHeight/2 };
+}
+function drawWires(){
+  svg.innerHTML='';
+  const path=(a,z,strong)=>{
+    const dx=Math.max(30,(z.x-a.x)/2);
+    const p=document.createElementNS('http://www.w3.org/2000/svg','path');
+    p.setAttribute('d',`M ${a.x} ${a.y} C ${a.x+dx} ${a.y}, ${z.x-dx} ${z.y}, ${z.x} ${z.y}`);
+    p.setAttribute('fill','none');
+    p.setAttribute('stroke', strong?'#9a4032':'rgba(43,36,23,0.3)');
+    p.setAttribute('stroke-width', strong?2:1.4);
+    svg.appendChild(p);
+  };
+  function walk(node){
+    if(node.kind==='prompt' && node.children[0]){
+      path(cardAnchor(node,'r'), cardAnchor(node.children[0],'l'), true);
+    }
+    if(node.kind==='response'){
+      node.moves.forEach(m=>{
+        if(!m.ask) path(cardAnchor(node,'r'), moveAnchor(node.id,m,'l'), false);
+      });
+      // spent moves wired to the child they spawned
+      node.children.forEach(child=>{
+        if(child._fromMove){
+          path(moveAnchor(node.id, child._fromMove,'r'), cardAnchor(child,'l'), true);
+        }
+      });
+    }
+    node.children.forEach(walk);
+  }
+  walk(root);
+}
+
+// ──────────────────────────────────────────────────────────────
+// FORK — click a move: mark spent, create child response, relayout+reflow.
+// ──────────────────────────────────────────────────────────────
+function fork(respNode, move){
+  if(move.spent) return;        // already forked this move (kept tucked; could allow re-fork)
+  move.spent = true;
+  const childResp = makeResponse(move.answer(respNode.topic||'this'), respNode.topic);
+  childResp._fromMove = move;   // remember which move spawned it (for the wire)
+  // a prompt-less branch: the move IS the connector, child is a response
+  respNode.children.push(childResp);
+  relayout(true);
+  maybeNudge(childResp);
+}
+
+document.getElementById('btn-reset').onclick = ()=>{
+  // wipe and rebuild
+  Object.values(els).forEach(e=>e.remove());
+  for(const k in els) delete els[k];
+  uid=0;
+  location.reload();
+};
+
+// ──────────────────────────────────────────────────────────────
+// CAMERA — calm. translate+scale on #world. NO auto-follow.
+// maybeNudge: only pan if the new node would be off-screen.
+// ──────────────────────────────────────────────────────────────
+const vp=document.getElementById('viewport'), zlabel=document.getElementById('zoom-level');
+const cam={x:0,y:0,k:1}; const MIN=0.25,MAX=2.5;
+function apply(anim){ world.classList.toggle('cam-animate',!!anim);
+  world.style.transform=`translate(${cam.x}px,${cam.y}px) scale(${cam.k})`; zlabel.textContent=Math.round(cam.k*100)+'%'; }
+function zoomAt(px,py,k,anim){ k=Math.min(MAX,Math.max(MIN,k));
+  const wx=(px-cam.x)/cam.k, wy=(py-cam.y)/cam.k; cam.k=k; cam.x=px-wx*cam.k; cam.y=py-wy*cam.k; apply(anim); }
+function center(){ const r=vp.getBoundingClientRect(); return {x:r.width/2,y:r.height/2}; }
+
+function maybeNudge(node){
+  // wait for layout transition target positions (use computed layout, not live DOM)
+  const p = layout[node.id]; if(!p) return;
+  const el = els[node.id];
+  const w = el.offsetWidth||260, h=el.offsetHeight||90;
+  const r = vp.getBoundingClientRect();
+  // node bbox in screen space
+  const sx = p.x*cam.k + cam.x, sy = (p.y - h/2)*cam.k + cam.y;
+  const margin=40;
+  let dx=0, dy=0;
+  if(sx + (w+ORBIT_GAP)*cam.k > r.width-margin) dx = (r.width-margin) - (sx+(w+ORBIT_GAP)*cam.k);
+  if(sx < margin) dx = margin - sx;
+  if(sy + h*cam.k > r.height-margin) dy = (r.height-margin) - (sy+h*cam.k);
+  if(sy < margin) dy = margin - sy;
+  if(dx||dy){ cam.x += dx; cam.y += dy; apply(true); }   // gentle nudge, only if needed
+}
+
+document.getElementById('z-in').onclick =()=>{ const c=center(); zoomAt(c.x,c.y,cam.k*1.25,true); };
+document.getElementById('z-out').onclick=()=>{ const c=center(); zoomAt(c.x,c.y,cam.k/1.25,true); };
+document.getElementById('z-fit').onclick=fitAll;
+function fitAll(){
+  const ids=Object.keys(layout);
+  let minX=1e9,minY=1e9,maxX=-1e9,maxY=-1e9;
+  ids.forEach(id=>{ const el=els[id]; if(!el)return; const p=layout[id]; const w=el.offsetWidth,h=el.offsetHeight;
+    minX=Math.min(minX,p.x); maxX=Math.max(maxX,p.x+w+ORBIT_GAP); minY=Math.min(minY,p.y-h/2); maxY=Math.max(maxY,p.y+h/2); });
+  const r=vp.getBoundingClientRect(), pad=70;
+  const k=Math.min(MAX,Math.max(MIN,Math.min((r.width-pad*2)/(maxX-minX),(r.height-pad*2)/(maxY-minY))));
+  cam.k=k; cam.x=(r.width-(maxX+minX)*k)/2; cam.y=(r.height-(maxY+minY)*k)/2; apply(true);
+}
+vp.addEventListener('wheel',(e)=>{ if(!(e.ctrlKey||e.metaKey))return; e.preventDefault();
+  const r=vp.getBoundingClientRect(); zoomAt(e.clientX-r.left,e.clientY-r.top, cam.k*(e.deltaY<0?1.12:1/1.12), false); },{passive:false});
+window.addEventListener('keydown',(e)=>{ if(/INPUT|TEXTAREA/.test(e.target.tagName))return;
+  if(e.key==='+'||e.key==='='){ const c=center(); zoomAt(c.x,c.y,cam.k*1.25,true); }
+  else if(e.key==='-'||e.key==='_'){ const c=center(); zoomAt(c.x,c.y,cam.k/1.25,true); }
+  else if(e.key==='0'){ fitAll(); } });
+let pan=false,sx=0,sy=0,ox=0,oy=0;
+vp.addEventListener('mousedown',(e)=>{ if(e.target.closest('.move,.run,#zoom-ui'))return;
+  pan=true; vp.classList.add('panning'); sx=e.clientX; sy=e.clientY; ox=cam.x; oy=cam.y; });
+window.addEventListener('mousemove',(e)=>{ if(!pan)return; cam.x=ox+(e.clientX-sx); cam.y=oy+(e.clientY-sy); apply(false); });
+window.addEventListener('mouseup',()=>{ pan=false; vp.classList.remove('panning'); });
+
+// init
+relayout(false);
+setTimeout(()=>{ relayout(false); fitAll(); }, 120); // re-measure after fonts
+</script>
+</body>
+</html>

@@ -1,0 +1,206 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Mockup A — Refined Paper</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Lora:ital,wght@0,400;0,600;0,700;1,400&family=Source+Code+Pro:wght@400;500;600&display=swap');
+
+/* ============================================================
+   MOCKUP A — "REFINED PAPER"
+   Keeps your aesthetic; declutters. Same family, calmer.
+   - softer single shadow (2px, lower opacity) instead of hard 3px
+   - texture toned down (no radial gradients; fainter rule lines)
+   - explore moves = one calm row of icon+label chips, no wrapping
+   - prompt card lighter: template shown as a quiet pill, not a full <select>
+   ============================================================ */
+
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+:root {
+  --paper:        #f6efe0;
+  --paper-card:   #fffdf6;
+  --paper-dark:   #ece2cd;
+  --ink:          #2b2417;
+  --ink-soft:     #6b5f47;
+  --line:         rgba(43,36,23,0.12);
+  --accent:       #9a4032;
+  --terminal-bg:  #211c15;
+  --terminal-ink: #e6dcb8;
+  --terminal-dim: #9a8d6c;
+  --terminal-accent: #d2785f;
+  --shadow:       rgba(43,36,23,0.18);
+}
+
+body {
+  font-family: 'Lora', Georgia, serif;
+  background: var(--paper);
+  color: var(--ink);
+  height: 100vh; overflow: hidden;
+  display: flex; flex-direction: column;
+}
+/* faint single rule, much softer than before */
+body::before {
+  content:''; position: fixed; inset: 0; z-index: 0; pointer-events: none;
+  background-image: repeating-linear-gradient(0deg, transparent 0 31px, rgba(43,36,23,0.03) 31px 32px);
+}
+
+#toolbar {
+  position: relative; z-index: 100;
+  display: flex; align-items: center; gap: 10px;
+  padding: 12px 22px; background: var(--paper-dark);
+  border-bottom: 1px solid var(--line); flex-shrink: 0;
+}
+#board-title { font-size: 1.3rem; font-weight: 700; letter-spacing: -0.5px; margin-right: 8px; }
+#board-title em { font-style: italic; color: var(--accent); font-weight: 400; }
+#toolbar button {
+  font-family: 'Source Code Pro', monospace; font-size: 0.72rem; font-weight: 600;
+  text-transform: uppercase; letter-spacing: 0.07em; padding: 7px 14px;
+  border: 1px solid var(--ink); background: transparent; color: var(--ink); cursor: pointer;
+  border-radius: 3px; transition: background .12s, color .12s;
+}
+#btn-new-prompt { background: var(--accent); color: var(--paper); border-color: var(--accent); }
+#save-status { margin-left:auto; font-family:'Source Code Pro',monospace; font-size:.7rem; color:var(--ink-soft); text-transform:uppercase; letter-spacing:.05em; }
+
+#canvas-container { flex:1; overflow:auto; position:relative; z-index:1; }
+#canvas { position:relative; width:1600px; height:1200px; }
+
+/* ── cards ── */
+.note { position:absolute; width:300px; display:flex; flex-direction:column; }
+.note-inner {
+  border: 1px solid rgba(43,36,23,0.45);
+  border-radius: 4px;
+  box-shadow: 0 2px 0 var(--shadow), 0 6px 14px -8px rgba(43,36,23,0.4);
+  display:flex; flex-direction:column; overflow:hidden;
+  transition: box-shadow .14s, transform .14s;
+}
+.note:hover .note-inner { box-shadow: 0 3px 0 var(--shadow), 0 10px 20px -8px rgba(43,36,23,0.45); transform: translateY(-1px); }
+
+.note-header {
+  display:flex; align-items:center; justify-content:space-between;
+  padding: 8px 13px; cursor:grab; user-select:none;
+  font-family:'Source Code Pro',monospace; font-size:.66rem; font-weight:600;
+  letter-spacing:.13em; text-transform:uppercase; border-bottom:1px solid var(--line);
+}
+.note-header .note-label { flex:1; }
+.btn-delete { background:none; border:none; cursor:pointer; color:inherit; opacity:.35; font-size:1.05rem; line-height:1; }
+.btn-delete:hover { opacity:1; color:var(--accent); }
+.note-body { padding: 13px 15px; }
+
+/* text */
+.note-text .note-inner { background: var(--paper-card); }
+.note-text .note-header { background: #f1e8d2; color: var(--ink-soft); }
+.note-text textarea { width:100%; min-height:84px; background:transparent; border:none; color:var(--ink);
+  font-family:'Lora',serif; font-size:.9rem; line-height:1.55; resize:none; outline:none; }
+
+/* prompt — lighter: quiet template pill instead of full dropdown chrome */
+.note-prompt .note-inner { background: var(--paper-card); }
+.note-prompt .note-header { background: #f1e8d2; color: var(--accent); }
+.note-prompt textarea {
+  width:100%; min-height:54px; background:#faf4e6; border:1px solid var(--line);
+  border-radius:3px; color:var(--ink); font-family:'Lora',serif; font-size:.9rem;
+  line-height:1.5; resize:none; outline:none; padding:8px 10px; margin-bottom:10px;
+}
+.prompt-controls { display:flex; align-items:center; gap:8px; }
+.template-pill {
+  flex:1; display:flex; align-items:center; gap:6px;
+  background:#faf4e6; border:1px solid var(--line); border-radius:20px;
+  padding:5px 12px; font-family:'Source Code Pro',monospace; font-size:.7rem;
+  color:var(--ink-soft); cursor:pointer;
+}
+.template-pill .sym { color: var(--accent); }
+.template-pill .chev { margin-left:auto; opacity:.5; }
+.btn-run {
+  background:var(--accent); color:var(--paper); border:none; border-radius:3px;
+  padding:7px 16px; cursor:pointer; font-family:'Source Code Pro',monospace;
+  font-size:.72rem; font-weight:600; text-transform:uppercase; letter-spacing:.07em;
+}
+
+/* connector */
+.connector { width:2px; height:20px; background:rgba(43,36,23,0.4); margin:0 auto; }
+
+/* response — terminal, but footer decluttered */
+.note-response { margin-top:6px; }
+.note-response .note-inner { background:var(--terminal-bg); border-color:rgba(0,0,0,0.5); }
+.note-response .note-header { background:#181410; color:var(--terminal-accent); border-bottom-color:rgba(230,220,184,0.1); }
+.note-response .note-header::before { content:'▸ '; }
+.response-content {
+  font-family:'Source Code Pro',monospace; font-size:.8rem; line-height:1.65;
+  color:var(--terminal-ink); white-space:pre-wrap; padding:13px 15px;
+}
+
+/* THE KEY DECLUTTER: one calm row of icon+label chips */
+.note-footer { padding:9px 13px; border-top:1px solid rgba(230,220,184,0.1); }
+.explore-moves { display:flex; align-items:center; gap:6px; flex-wrap:wrap; }
+.btn-move {
+  display:inline-flex; align-items:center; gap:5px;
+  background:transparent; border:1px solid rgba(230,220,184,0.25);
+  color:var(--terminal-ink); font-family:'Source Code Pro',monospace; font-size:.68rem;
+  padding:4px 9px; border-radius:14px; cursor:pointer; transition:all .12s;
+}
+.btn-move .ico { color:var(--terminal-accent); font-size:.78rem; }
+.btn-move:hover { background:var(--terminal-accent); color:var(--terminal-bg); border-color:var(--terminal-accent); }
+.btn-move:hover .ico { color:var(--terminal-bg); }
+.btn-move.ask { margin-left:auto; border-color:rgba(230,220,184,0.15); color:var(--terminal-dim); }
+.note-caption { position:fixed; bottom:14px; left:22px; font-family:'Source Code Pro',monospace; font-size:.72rem; color:var(--ink-soft); background:var(--paper-card); border:1px solid var(--line); padding:7px 13px; border-radius:4px; z-index:200; }
+</style>
+</head>
+<body>
+  <div id="toolbar">
+    <span id="board-title">the <em>note</em> board</span>
+    <button>+ text note</button>
+    <button id="btn-new-prompt">+ prompt note</button>
+    <button>focus</button>
+    <span id="save-status">saved</span>
+  </div>
+  <div id="canvas-container">
+    <div id="canvas">
+
+      <!-- text note -->
+      <div class="note note-text" style="left:60px; top:50px;">
+        <div class="note-inner">
+          <div class="note-header"><span class="note-label">text note</span><button class="btn-delete">×</button></div>
+          <div class="note-body">
+            <textarea>Reading about entropy. Keeps coming up in info theory AND thermodynamics — are they the same thing?</textarea>
+          </div>
+        </div>
+      </div>
+
+      <!-- prompt → response chain -->
+      <div class="note note-prompt" style="left:430px; top:50px;">
+        <div class="note-inner">
+          <div class="note-header"><span class="note-label">prompt</span><button class="btn-delete">×</button></div>
+          <div class="note-body">
+            <textarea>Shannon entropy</textarea>
+            <div class="prompt-controls">
+              <div class="template-pill"><span class="sym">◎</span> explain term <span class="chev">▾</span></div>
+              <button class="btn-run">Run ▶</button>
+            </div>
+          </div>
+        </div>
+        <div class="connector"></div>
+        <div class="note note-response" style="position:relative; left:0; top:0; width:100%;">
+          <div class="note-inner">
+            <div class="note-header"><span class="note-label">response</span></div>
+            <div class="response-content">Shannon entropy measures the average uncertainty in a message source — how many bits you'd need, on average, to encode the next symbol. Higher entropy = less predictable = more information per symbol.</div>
+            <div class="note-footer">
+              <div class="explore-moves">
+                <button class="btn-move"><span class="ico">→</span> more</button>
+                <button class="btn-move"><span class="ico">?</span> why</button>
+                <button class="btn-move"><span class="ico">◈</span> example</button>
+                <button class="btn-move"><span class="ico">⇄</span> relate</button>
+                <button class="btn-move"><span class="ico">⊕</span> term</button>
+                <button class="btn-move ask"><span class="ico">↩</span> ask</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+    </div>
+  </div>
+  <div class="note-caption">Mockup A · "Refined Paper" — same aesthetic, decluttered: softer shadows, calm chip row, lighter prompt card</div>
+</body>
+</html>
