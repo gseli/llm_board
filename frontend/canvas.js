@@ -428,23 +428,15 @@ function renderChain(rootPrompt) {
 
 // ── Drag-and-drop ─────────────────────────────────────────────
 
+// Manual node positioning is gone — the tidy-tree layout owns every node's
+// position now (see layoutForest). Cards keep resize; dragging to reposition is
+// a no-op. (The only drag that returns is gestural long-press detach, slice #25.)
 function makeDraggable(el, note) {
-  const header = el.querySelector(".note-header");
-  attachDrag(header, el, note, (x, y) => {
-    note.x = x; note.y = y;
-    el.style.left = `${x}px`;
-    el.style.top = `${y}px`;
-  });
   attachResize(el, note);
 }
 
-function makeDraggableGroup(groupEl, promptNote) {
-  const header = groupEl.querySelector(".note-header");
-  attachDrag(header, groupEl, promptNote, (x, y) => {
-    promptNote.x = x; promptNote.y = y;
-    groupEl.style.left = `${x}px`;
-    groupEl.style.top = `${y}px`;
-  });
+function makeDraggableGroup(_groupEl, _promptNote) {
+  // no-op: layout is auto-computed; nodes are not hand-positioned
 }
 
 // Set true while a drag is moving the cursor, so the click that follows a
