@@ -1,0 +1,182 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Mockup B — Modern Editorial</title>
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Newsreader:ital,opsz,wght@0,6..72,400;0,6..72,500;0,6..72,600;1,6..72,400&family=IBM+Plex+Mono:wght@400;500;600&display=swap');
+
+/* ============================================================
+   MOCKUP B — "MODERN EDITORIAL"
+   Bolder restyle. Keeps canvas + chains; drops skeuomorphism.
+   - clean off-white cards, soft real shadows, gentle radius
+   - strong type hierarchy (Newsreader display + Plex Mono labels)
+   - response is a LIGHT readable card with a colored left spine,
+     not a dark terminal (much better for reading long answers)
+   - explore moves = quiet text buttons separated by a divider
+   ============================================================ */
+
+*, *::before, *::after { box-sizing:border-box; margin:0; padding:0; }
+
+:root {
+  --bg:        #faf8f4;
+  --card:      #ffffff;
+  --ink:       #1d1b16;
+  --ink-soft:  #6f6a5e;
+  --ink-faint: #a39d8e;
+  --line:      #e9e4d8;
+  --accent:    #b4513c;
+  --accent-bg: #fbeee9;
+  --spine:     #c25a44;
+}
+
+body {
+  font-family:'Newsreader', Georgia, serif; background:var(--bg); color:var(--ink);
+  height:100vh; overflow:hidden; display:flex; flex-direction:column;
+}
+#toolbar {
+  display:flex; align-items:center; gap:12px; padding:14px 24px;
+  background:rgba(255,255,255,0.7); backdrop-filter:blur(8px);
+  border-bottom:1px solid var(--line); flex-shrink:0; z-index:100;
+}
+#board-title { font-size:1.4rem; font-weight:600; letter-spacing:-0.4px; margin-right:8px; }
+#board-title em { font-style:italic; color:var(--accent); font-weight:400; }
+#toolbar button {
+  font-family:'IBM Plex Mono',monospace; font-size:.72rem; font-weight:500;
+  letter-spacing:.02em; padding:8px 15px; border:1px solid var(--line);
+  background:var(--card); color:var(--ink-soft); cursor:pointer; border-radius:8px;
+  transition:all .14s;
+}
+#toolbar button:hover { border-color:var(--ink-soft); color:var(--ink); }
+#btn-new-prompt { background:var(--accent); color:#fff; border-color:var(--accent); }
+#save-status { margin-left:auto; font-family:'IBM Plex Mono',monospace; font-size:.68rem; color:var(--ink-faint); text-transform:uppercase; letter-spacing:.06em; }
+
+#canvas-container { flex:1; overflow:auto; position:relative; }
+#canvas { position:relative; width:1600px; height:1200px; }
+
+.note { position:absolute; width:310px; display:flex; flex-direction:column; }
+.note-inner {
+  background:var(--card); border:1px solid var(--line); border-radius:12px;
+  box-shadow:0 1px 2px rgba(29,27,22,0.04), 0 8px 24px -12px rgba(29,27,22,0.18);
+  overflow:hidden; transition:box-shadow .16s, transform .16s;
+}
+.note:hover .note-inner { box-shadow:0 2px 4px rgba(29,27,22,0.06), 0 14px 32px -12px rgba(29,27,22,0.24); transform:translateY(-2px); }
+
+.note-header {
+  display:flex; align-items:center; gap:8px; padding:11px 16px; cursor:grab; user-select:none;
+  font-family:'IBM Plex Mono',monospace; font-size:.64rem; font-weight:500;
+  letter-spacing:.14em; text-transform:uppercase; color:var(--ink-faint);
+  border-bottom:1px solid var(--line);
+}
+.note-header .dot { width:7px; height:7px; border-radius:50%; background:var(--ink-faint); }
+.note-header .note-label { flex:1; }
+.btn-delete { background:none; border:none; cursor:pointer; color:var(--ink-faint); opacity:.6; font-size:1.05rem; line-height:1; }
+.btn-delete:hover { color:var(--accent); opacity:1; }
+.note-body { padding:15px 16px; }
+
+.note-text textarea { width:100%; min-height:80px; border:none; outline:none; resize:none;
+  font-family:'Newsreader',serif; font-size:1rem; line-height:1.55; color:var(--ink); background:transparent; }
+.note-text .note-header .dot { background:#c9a84a; }
+
+.note-prompt .note-header .dot { background:var(--accent); }
+.note-prompt textarea {
+  width:100%; min-height:48px; border:1px solid var(--line); border-radius:8px;
+  outline:none; resize:none; padding:9px 11px; margin-bottom:11px;
+  font-family:'Newsreader',serif; font-size:1rem; line-height:1.5; color:var(--ink); background:var(--bg);
+}
+.note-prompt textarea:focus { border-color:var(--accent); }
+.prompt-controls { display:flex; gap:9px; align-items:center; }
+.template-pill {
+  flex:1; display:flex; align-items:center; gap:7px; background:var(--accent-bg);
+  border:1px solid #f0d9d0; border-radius:8px; padding:7px 12px;
+  font-family:'IBM Plex Mono',monospace; font-size:.7rem; color:var(--accent); cursor:pointer;
+}
+.template-pill .chev { margin-left:auto; opacity:.6; }
+.btn-run {
+  background:var(--accent); color:#fff; border:none; border-radius:8px; padding:8px 18px;
+  cursor:pointer; font-family:'IBM Plex Mono',monospace; font-size:.72rem; font-weight:600; letter-spacing:.03em;
+}
+
+.connector { width:2px; height:22px; background:var(--line); margin:0 auto; position:relative; }
+.connector::after { content:''; position:absolute; left:-2px; bottom:0; width:6px; height:6px; border-radius:50%; background:var(--accent); }
+
+/* response — LIGHT readable card with colored spine (the big change from terminal) */
+.note-response { margin-top:6px; }
+.note-response .note-inner { border-left:3px solid var(--spine); }
+.note-response .note-header { color:var(--spine); }
+.note-response .note-header .dot { background:var(--spine); }
+.response-content {
+  font-family:'Newsreader',serif; font-size:1.02rem; line-height:1.62; color:#33302a;
+  padding:16px; white-space:pre-wrap;
+}
+
+.note-footer { padding:0 8px 10px; }
+.explore-moves { display:flex; align-items:center; gap:2px; flex-wrap:wrap; }
+.btn-move {
+  background:transparent; border:none; color:var(--ink-soft);
+  font-family:'IBM Plex Mono',monospace; font-size:.7rem; padding:6px 10px;
+  border-radius:7px; cursor:pointer; transition:all .12s; display:inline-flex; align-items:center; gap:5px;
+}
+.btn-move .ico { color:var(--spine); }
+.btn-move:hover { background:var(--accent-bg); color:var(--accent); }
+.btn-move.ask { margin-left:auto; color:var(--ink-faint); }
+.divider { width:1px; height:16px; background:var(--line); }
+
+.note-caption { position:fixed; bottom:16px; left:24px; font-family:'IBM Plex Mono',monospace; font-size:.72rem; color:var(--ink-soft); background:var(--card); border:1px solid var(--line); padding:8px 14px; border-radius:8px; box-shadow:0 4px 12px -6px rgba(0,0,0,0.2); }
+</style>
+</head>
+<body>
+  <div id="toolbar">
+    <span id="board-title">the <em>note</em> board</span>
+    <button>+ text note</button>
+    <button id="btn-new-prompt">+ prompt note</button>
+    <button>focus</button>
+    <span id="save-status">saved</span>
+  </div>
+  <div id="canvas-container">
+    <div id="canvas">
+
+      <div class="note note-text" style="left:60px; top:50px;">
+        <div class="note-inner">
+          <div class="note-header"><span class="dot"></span><span class="note-label">text note</span><button class="btn-delete">×</button></div>
+          <div class="note-body"><textarea>Reading about entropy. Keeps coming up in info theory AND thermodynamics — are they the same thing?</textarea></div>
+        </div>
+      </div>
+
+      <div class="note note-prompt" style="left:440px; top:50px;">
+        <div class="note-inner">
+          <div class="note-header"><span class="dot"></span><span class="note-label">prompt</span><button class="btn-delete">×</button></div>
+          <div class="note-body">
+            <textarea>Shannon entropy</textarea>
+            <div class="prompt-controls">
+              <div class="template-pill">◎ explain term <span class="chev">▾</span></div>
+              <button class="btn-run">Run</button>
+            </div>
+          </div>
+        </div>
+        <div class="connector"></div>
+        <div class="note note-response" style="position:relative; left:0; top:0; width:100%;">
+          <div class="note-inner">
+            <div class="note-header"><span class="dot"></span><span class="note-label">response</span></div>
+            <div class="response-content">Shannon entropy measures the average uncertainty in a message source — how many bits you'd need, on average, to encode the next symbol. Higher entropy = less predictable = more information per symbol.</div>
+            <div class="note-footer">
+              <div class="explore-moves">
+                <button class="btn-move"><span class="ico">→</span> more</button>
+                <button class="btn-move"><span class="ico">?</span> why</button>
+                <button class="btn-move"><span class="ico">◈</span> example</button>
+                <span class="divider"></span>
+                <button class="btn-move"><span class="ico">⇄</span> relate</button>
+                <button class="btn-move"><span class="ico">⊕</span> term</button>
+                <button class="btn-move ask">↩ ask your own</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+    </div>
+  </div>
+  <div class="note-caption">Mockup B · "Modern Editorial" — clean light cards, strong type, response as a readable card (not a dark terminal)</div>
+</body>
+</html>

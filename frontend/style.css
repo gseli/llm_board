@@ -152,17 +152,70 @@ body::before {
 }
 
 /* ── Canvas ── */
+/* The container is the camera viewport (no native scroll); #canvas is the
+   transform-driven "world" layer (translate + scale set by JS). */
 #canvas-container {
   flex: 1;
-  overflow: auto;
+  overflow: hidden;
   position: relative;
   z-index: 1;
+  cursor: default;
 }
+#canvas-container.panning { cursor: grabbing; }
 
 #canvas {
-  position: relative;
-  width: 4000px;
-  height: 3000px;
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 0;
+  height: 0;
+  transform-origin: 0 0;
+  will-change: transform;
+}
+
+/* ── Zoom controls ── */
+#zoom-ui {
+  position: absolute;
+  right: 16px;
+  bottom: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  z-index: 50;
+}
+#zoom-ui button {
+  width: 36px;
+  height: 36px;
+  border: 1.5px solid var(--ink);
+  background: var(--paper);
+  color: var(--ink);
+  font-family: 'Source Code Pro', monospace;
+  font-size: 1rem;
+  font-weight: 600;
+  cursor: pointer;
+  box-shadow: 2px 2px 0 var(--ink);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: transform 0.1s, box-shadow 0.1s, background 0.12s, color 0.12s;
+}
+#zoom-ui button.fit { font-size: 0.62rem; text-transform: uppercase; letter-spacing: 0.06em; }
+#zoom-ui button:hover {
+  background: var(--ink);
+  color: var(--paper);
+  transform: translate(-1px, -1px);
+  box-shadow: 3px 3px 0 var(--ink);
+}
+#zoom-ui button:active {
+  transform: translate(1px, 1px);
+  box-shadow: 1px 1px 0 var(--ink);
+}
+#zoom-level {
+  text-align: center;
+  font-family: 'Source Code Pro', monospace;
+  font-size: 0.62rem;
+  color: var(--ink-soft);
+  letter-spacing: 0.04em;
 }
 
 /* ── Note cards ── */
