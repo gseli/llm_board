@@ -225,6 +225,27 @@ body::before {
   min-width: 200px;
   display: flex;
   flex-direction: column;
+  /* Glide to new tidy-tree positions when the forest reflows on a fork. */
+  transition: left 0.4s cubic-bezier(0.22, 0.61, 0.36, 1),
+              top 0.4s cubic-bezier(0.22, 0.61, 0.36, 1);
+}
+
+/* SVG wire layer — parent→child connectors, drawn under the cards in world space. */
+#wires {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 1px;
+  height: 1px;
+  overflow: visible;
+  pointer-events: none;
+  z-index: 0;
+}
+#wires .wire {
+  fill: none;
+  stroke: var(--ink);
+  stroke-width: 2;
+  opacity: 0.55;
 }
 
 /* Focus mode: non-active groups dim to the background but stay clickable, so a
