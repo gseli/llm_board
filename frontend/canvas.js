@@ -74,11 +74,22 @@ function fitAll() {
 
 // ── Persistence ──────────────────────────────────────────────
 
+// Board-level layout flag. A board without it is a pre-tree (vertical) board;
+// since vertical chains are already linear trees, migration is just stamping
+// the flag — the tidy-tree renderer lays the existing chains out horizontally
+// with no structural change. Re-saved on next persist.
+let layout = "tree";
+
 async function loadBoard() {
   const res = await fetch(`/board/${BOARD_NAME}`);
   const data = await res.json();
   notes = data.notes || [];
+  const needsStamp = data.layout !== "tree" && notes.length > 0;
+  layout = "tree";
   renderAll();
+  // Persist the migration stamp on first load of a real (non-empty) legacy board.
+  // Skip empty boards so merely visiting an unknown board name doesn't create a file.
+  if (needsStamp) scheduleSave();
 }
 
 function scheduleSave() {
@@ -88,7 +99,7 @@ function scheduleSave() {
     await fetch(`/board/${BOARD_NAME}`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ notes }),
+      body: JSON.stringify({ notes, layout }),
     });
     setSaveStatus("saved");
     setTimeout(() => setSaveStatus(""), 1500);
@@ -334,22 +345,136 @@ async function runPrompt(parentId, builtPrompt) {
 
 // ── Rendering ─────────────────────────────────────────────────
 
+// Tidy-tree layout constants (world px).
+const COL_W = 330;     // horizontal distance between depth columns
+const ROW_GAP = 28;    // vertical gap between sibling subtrees
+const TREE_GAP = 70;   // vertical gap between top-level trees
+const FALLBACK_H = 150; // assumed card height before it has been measured
+
+// A forest root is any note with no parent: a chain-root prompt or a standalone
+// text note. Each lays out as its own tree in its own vertical band.
+function forestRoots() {
+  return notes.filter((n) => !n.parent_id);
+}
+function childrenOf(id) {
+  return notes.filter((n) => n.parent_id === id);
+}
+
+// Walk up parent links to the forest root that owns this node. `guard` caps the
+// walk so a malformed parent_id cycle can't loop forever.
+function rootOf(id) {
+  let cur = notes.find((n) => n.id === id);
+  let guard = 0;
+  while (cur && cur.parent_id && guard++ < 10000) {
+    cur = notes.find((n) => n.id === cur.parent_id);
+  }
+  return cur ? cur.id : id;
+}
+
+// Height a node's subtree occupies: max(own card height, total height of its
+// children's subtrees + gaps). Uses measured heights from `heights`. `seen`
+// guards against a parent_id cycle.
+function subtreeHeight(note, heights, seen = new Set()) {
+  if (seen.has(note.id)) return 0;
+  seen.add(note.id);
+  const own = heights[note.id] || FALLBACK_H;
+  const kids = childrenOf(note.id);
+  if (!kids.length) return own;
+  const kidsTotal = kids.reduce((sum, k) => sum + subtreeHeight(k, heights, seen), 0)
+    + ROW_GAP * (kids.length - 1);
+  return Math.max(own, kidsTotal);
+}
+
+// Assign world x/y to every node in a subtree. x by depth; y centers each node
+// on its subtree band so siblings (and their subtrees) never overlap.
+function assignLayout(note, depth, top, pos, heights, seen = new Set()) {
+  if (seen.has(note.id)) return 0;
+  seen.add(note.id);
+  const band = subtreeHeight(note, heights);
+  pos[note.id] = { x: depth * COL_W, y: top + band / 2, depth };
+  let cursor = top;
+  childrenOf(note.id).forEach((k) => {
+    const kBand = subtreeHeight(k, heights);
+    assignLayout(k, depth + 1, cursor, pos, heights, seen);
+    cursor += kBand + ROW_GAP;
+  });
+  return band;
+}
+
+// Lay out the whole forest given measured card heights, writing pos[id]={x,y}.
+function computeForest(heights) {
+  const pos = {};
+  let top = 0;
+  forestRoots().forEach((root) => {
+    top += assignLayout(root, 0, top, pos, heights) + TREE_GAP;
+  });
+  return pos;
+}
+
 function renderAll() {
   canvas.innerHTML = "";
 
-  // Render standalone text notes
-  notes.filter((n) => n.type === "text").forEach((note) => {
-    const el = createNoteElement(note, deleteNote, runPrompt, updateNote, null);
-    makeDraggable(el, note);
-    applyFocus(el, note.id);
-    attachFocusClick(el, note.id);
+  // SVG wire layer underneath the cards (parent→child connectors).
+  const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+  svg.id = "wires";
+  canvas.appendChild(svg);
+
+  // Pass 1: render every card at its column x (top temporary) so it's in the DOM
+  // and measurable. Orphans (parent_id set but parent gone) get no column and are
+  // skipped — warn so a silently-lost note is at least visible in the console.
+  const cards = {};
+  const provisional = computeForest({}); // x is height-independent; gives columns
+  notes.forEach((note) => {
+    const p = provisional[note.id];
+    if (!p) {
+      if (note.parent_id) console.warn("Orphaned note (parent missing), not rendered:", note.id);
+      return;
+    }
+    const el = createNoteElement(
+      note, deleteNote, runPrompt, updateNote, replyToResponse, exploreFromResponse
+    );
+    el.style.position = "absolute";
+    el.style.left = `${p.x}px`;
+    el.style.top = "0px";
+    el.dataset.id = note.id;
+    if (note.type === "text") makeDraggable(el, note); else attachResize(el, note);
+    const rootId = rootOf(note.id);
+    applyFocus(el, rootId);
+    attachFocusClick(el, rootId);
     canvas.appendChild(el);
+    cards[note.id] = el;
   });
 
-  // Render root prompt notes as chains (prompt nodes with no prompt parent)
-  notes
-    .filter((n) => n.type === "prompt" && !notes.some((p) => p.id === n.parent_id && p.type === "response"))
-    .forEach((note) => renderChain(note));
+  // Pass 2: measure real heights, recompute the forest, place cards + wires.
+  const heights = {};
+  Object.entries(cards).forEach(([id, el]) => { heights[id] = el.offsetHeight; });
+  const pos = computeForest(heights);
+  Object.entries(cards).forEach(([id, el]) => {
+    const p = pos[id];
+    if (p) { el.style.left = `${p.x}px`; el.style.top = `${p.y - el.offsetHeight / 2}px`; }
+  });
+  drawWires(svg, pos, heights, cards);
+}
+
+// Draw a curved wire from each parent's right edge to each child's left edge.
+// Anchors at each card's vertical center using its real width/height.
+function drawWires(svg, pos, heights, cards) {
+  notes.forEach((note) => {
+    const cp = pos[note.id];
+    if (!cp) return;
+    const pw = cards[note.id] ? cards[note.id].offsetWidth : 290;
+    childrenOf(note.id).forEach((child) => {
+      const kp = pos[child.id];
+      if (!kp) return;
+      const ax = cp.x + pw, ay = cp.y;
+      const zx = kp.x, zy = kp.y;
+      const dx = Math.max(30, (zx - ax) / 2);
+      const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
+      path.setAttribute("d", `M ${ax} ${ay} C ${ax + dx} ${ay}, ${zx - dx} ${zy}, ${zx} ${zy}`);
+      path.setAttribute("class", "wire");
+      svg.appendChild(path);
+    });
+  });
 }
 
 // In focus mode, dim every top-level group whose id isn't the active one.
@@ -358,16 +483,12 @@ function applyFocus(el, groupId) {
   if (focusMode && groupId !== activeGroupId) el.classList.add("dimmed");
 }
 
-// The first top-level group in render order (text notes first, then chain roots),
-// mirroring renderAll. Used to pre-select a group when focus mode turns on so the
-// view is never "everything dimmed, nothing bright". null on an empty board.
+// The first forest root in render order. Used to pre-select a group when focus
+// mode turns on so the view is never "everything dimmed, nothing bright".
+// Keyed the same way as the per-card focus group (rootOf). null on an empty board.
 function firstGroupId() {
-  const firstText = notes.find((n) => n.type === "text");
-  if (firstText) return firstText.id;
-  const firstRoot = notes.find(
-    (n) => n.type === "prompt" && !notes.some((p) => p.id === n.parent_id && p.type === "response")
-  );
-  return firstRoot ? firstRoot.id : null;
+  const roots = forestRoots();
+  return roots.length ? roots[0].id : null;
 }
 
 // Click a group (while focus mode is on) to make it the active, bright one.
@@ -382,69 +503,17 @@ function attachFocusClick(el, groupId) {
   });
 }
 
-function renderChain(rootPrompt) {
-  const group = document.createElement("div");
-  group.dataset.groupId = rootPrompt.id;
-  group.style.position = "absolute";
-  group.style.left = `${rootPrompt.x}px`;
-  group.style.top = `${rootPrompt.y}px`;
-  group.style.display = "flex";
-  group.style.flexDirection = "column";
-
-  let current = rootPrompt;
-  let isFirst = true;
-
-  while (current) {
-    const el = createNoteElement(current, deleteNote, runPrompt, updateNote, replyToResponse, exploreFromResponse);
-    el.style.left = "";
-    el.style.top = "";
-    el.style.position = "relative";
-
-    attachResize(el, current);
-    group.appendChild(el);
-
-    if (isFirst) {
-      // Wire drag after the first card is in the DOM so querySelector finds the header
-      makeDraggableGroup(group, rootPrompt);
-      isFirst = false;
-    }
-
-    // Find child: response of this prompt, or follow-up prompt of this response
-    const child = notes.find((n) => n.parent_id === current.id);
-    if (child) {
-      const connector = document.createElement("div");
-      connector.className = "note-connector";
-      group.appendChild(connector);
-      current = child;
-    } else {
-      current = null;
-    }
-  }
-
-  applyFocus(group, rootPrompt.id);
-  attachFocusClick(group, rootPrompt.id);
-  canvas.appendChild(group);
-}
-
 // ── Drag-and-drop ─────────────────────────────────────────────
 
+// Manual node positioning is gone — the tidy-tree layout owns every node's
+// position now (see layoutForest). Cards keep resize; dragging to reposition is
+// a no-op. (The only drag that returns is gestural long-press detach, slice #25.)
 function makeDraggable(el, note) {
-  const header = el.querySelector(".note-header");
-  attachDrag(header, el, note, (x, y) => {
-    note.x = x; note.y = y;
-    el.style.left = `${x}px`;
-    el.style.top = `${y}px`;
-  });
   attachResize(el, note);
 }
 
-function makeDraggableGroup(groupEl, promptNote) {
-  const header = groupEl.querySelector(".note-header");
-  attachDrag(header, groupEl, promptNote, (x, y) => {
-    promptNote.x = x; promptNote.y = y;
-    groupEl.style.left = `${x}px`;
-    groupEl.style.top = `${y}px`;
-  });
+function makeDraggableGroup(_groupEl, _promptNote) {
+  // no-op: layout is auto-computed; nodes are not hand-positioned
 }
 
 // Set true while a drag is moving the cursor, so the click that follows a
@@ -542,9 +611,9 @@ document.getElementById("btn-focus").addEventListener("click", (e) => {
 });
 
 // ── Camera controls: pan, zoom (buttons / Ctrl+wheel / keyboard) ──
-// Slice 1: pan stays on the MIDDLE mouse button so it never collides with
-// left-button card drag (cards are still freely draggable this slice). A later
-// slice moves pan to left-drag-on-empty-space once card drag is removed.
+// Manual card drag is gone (tidy-tree owns layout), so pan now works on the
+// LEFT button over empty space, plus the middle button anywhere. A mousedown
+// that lands on a card or control doesn't start a pan, so clicks/selection work.
 
 (function initCamera() {
   const container = document.getElementById("canvas-container");
@@ -552,7 +621,9 @@ document.getElementById("btn-focus").addEventListener("click", (e) => {
   let startX, startY, origCamX, origCamY;
 
   container.addEventListener("mousedown", (e) => {
-    if (e.button !== 1) return; // middle button only
+    const onContent = e.target.closest(".note, #zoom-ui");
+    const isPanButton = e.button === 1 || (e.button === 0 && !onContent);
+    if (!isPanButton) return;
     e.preventDefault();
     panning = true;
     startX = e.clientX;
@@ -569,8 +640,8 @@ document.getElementById("btn-focus").addEventListener("click", (e) => {
     applyCamera();
   });
 
-  window.addEventListener("mouseup", (e) => {
-    if (e.button !== 1) return;
+  window.addEventListener("mouseup", () => {
+    if (!panning) return;
     panning = false;
     container.classList.remove("panning");
   });

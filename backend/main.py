@@ -21,6 +21,7 @@ class PromptRequest(BaseModel):
 
 class BoardData(BaseModel):
     notes: list
+    layout: Optional[str] = None  # "tree" once migrated; absent on legacy boards
 
 
 @app.get("/board/{name}")
