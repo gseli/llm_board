@@ -564,6 +564,26 @@ function renderAll() {
   // Build orbit pills (before wires, so wire routing can use pill positions).
   const orbitPos = buildOrbits(orbitLayer, pos, cards);
   drawWires(svg, pos, cards, orbitPos);
+
+  // Keep the render state so a live drag can redraw just the wires without a
+  // full renderAll on every mousemove.
+  lastRender = { svg, pos, cards, orbitPos };
+}
+
+// Latest render state, used by redrawWiresLive during a drag.
+let lastRender = null;
+
+// Redraw wires against the dragged node's CURRENT on-screen position (read from
+// the DOM), patching the stale layout `pos` so connectors track the card live.
+function redrawWiresLive(draggedId) {
+  if (!lastRender) return;
+  const { svg, pos, cards, orbitPos } = lastRender;
+  const el = cards[draggedId];
+  if (el) {
+    pos[draggedId] = { x: el.offsetLeft, y: el.offsetTop + el.offsetHeight / 2 };
+  }
+  svg.innerHTML = "";
+  drawWires(svg, pos, cards, orbitPos);
 }
 
 // Render the floating move pills for every eligible response. Returns
@@ -778,6 +798,7 @@ function attachNodeDrag(el, note) {
     const origX = (note.manual_x != null) ? note.manual_x : parseFloat(el.style.left) || 0;
     const origY = (note.manual_y != null) ? note.manual_y : (parseFloat(el.style.top) || 0) + el.offsetHeight / 2;
     let mode = null; // 'drag' | 'unlink'
+    let rafPending = false;
     const canUnlink = !!note.parent_id;
 
     const timer = canUnlink
@@ -795,6 +816,11 @@ function attachNodeDrag(el, note) {
         const nx = origX + dx / cam.k, ny = origY + dy / cam.k;
         el.style.left = `${nx}px`;
         el.style.top = `${ny - el.offsetHeight / 2}px`;
+        // Redraw connectors live, throttled to one repaint per frame.
+        if (!rafPending) {
+          rafPending = true;
+          requestAnimationFrame(() => { rafPending = false; redrawWiresLive(note.id); });
+        }
       }
     };
     const up = () => {
