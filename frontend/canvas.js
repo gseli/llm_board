@@ -168,6 +168,15 @@ const undoStack = [];
 const UNDO_LIMIT = 10;
 
 function deleteNote(id) {
+  // If this is a forked response (its parent is a hidden follow-up prompt),
+  // delete the whole fork unit from that prompt — otherwise the hidden prompt
+  // would be left orphaned. The move pill un-spends naturally on re-render.
+  const target = notes.find((n) => n.id === id);
+  if (target && target.parent_id) {
+    const parent = notes.find((n) => n.id === target.parent_id);
+    if (parent && isHiddenPrompt(parent)) id = parent.id;
+  }
+
   // Collect the whole subtree (root + descendants) before mutating `notes`,
   // so undo restores it as one unit rather than orphaned fragments.
   const removed = [];
@@ -416,6 +425,28 @@ function childrenOf(id) {
   return notes.filter((n) => n.parent_id === id);
 }
 
+// A follow-up prompt (a prompt with a parent — created by an explore move or
+// "ask your own") is NOT shown as a card: the move pill IS the question, so its
+// answer connects directly. Only the ROOT prompt of a tree is a visible prompt.
+function isHiddenPrompt(note) {
+  return note.type === "prompt" && !!note.parent_id;
+}
+// Visible children for layout/wires: a hidden follow-up prompt is a pass-through,
+// so we surface ITS children (the forked responses) in its place. Returns
+// {node, viaPrompt} — viaPrompt is the hidden prompt a response came through (if
+// any), used to route the wire from the source response's move pill.
+function displayChildrenOf(id) {
+  const out = [];
+  childrenOf(id).forEach((c) => {
+    if (isHiddenPrompt(c)) {
+      childrenOf(c.id).forEach((gc) => out.push({ node: gc, viaPrompt: c }));
+    } else {
+      out.push({ node: c, viaPrompt: null });
+    }
+  });
+  return out;
+}
+
 // Walk up parent links to the forest root that owns this node. `guard` caps the
 // walk so a malformed parent_id cycle can't loop forever.
 function rootOf(id) {
@@ -435,24 +466,36 @@ function subtreeHeight(note, heights, seen = new Set()) {
   seen.add(note.id);
   const own = heights[note.id] || FALLBACK_H;
   const orbit = orbitHeightFor(note); // 0 unless this is a response showing pills
-  const kids = childrenOf(note.id);
+  const kids = displayChildrenOf(note.id); // hidden follow-up prompts are passed through
   if (!kids.length) return Math.max(own, orbit);
-  const kidsTotal = kids.reduce((sum, k) => sum + subtreeHeight(k, heights, seen), 0)
+  const kidsTotal = kids.reduce((sum, k) => sum + subtreeHeight(k.node, heights, seen), 0)
     + ROW_GAP * (kids.length - 1);
   return Math.max(own, kidsTotal, orbit);
 }
 
-// Assign world x/y to every node in a subtree. x by depth; y centers each node
-// on its subtree band so siblings (and their subtrees) never overlap.
-function assignLayout(note, depth, top, pos, heights, seen = new Set()) {
+// Assign world x/y to every visible node in a subtree. By default x is by depth
+// and y centers the node on its subtree band (siblings never overlap). A node the
+// user dragged (manual_x/manual_y pinned) sits at its pin, and its whole subtree
+// lays out relative to that pin so it travels with the node.
+//   x: column origin for this node's children
+//   top: top of the vertical band these nodes occupy
+function assignLayout(note, x, top, pos, heights, seen = new Set()) {
   if (seen.has(note.id)) return 0;
   seen.add(note.id);
   const band = subtreeHeight(note, heights);
-  pos[note.id] = { x: depth * COL_W, y: top + band / 2, depth };
-  let cursor = top;
-  childrenOf(note.id).forEach((k) => {
-    const kBand = subtreeHeight(k, heights);
-    assignLayout(k, depth + 1, cursor, pos, heights, seen);
+  const pinned = note.manual_x != null && note.manual_y != null;
+  const nx = pinned ? note.manual_x : x;
+  const ny = pinned ? note.manual_y : top + band / 2;
+  pos[note.id] = { x: nx, y: ny };
+  // Children flow from this node's actual position (so a pinned/dragged node
+  // carries its subtree). Center the children band on this node's y.
+  const childTotal = displayChildrenOf(note.id)
+    .reduce((s, k) => s + subtreeHeight(k.node, heights), 0)
+    + ROW_GAP * Math.max(0, displayChildrenOf(note.id).length - 1);
+  let cursor = ny - childTotal / 2;
+  displayChildrenOf(note.id).forEach((k) => {
+    const kBand = subtreeHeight(k.node, heights);
+    assignLayout(k.node, nx + COL_W, cursor, pos, heights, seen);
     cursor += kBand + ROW_GAP;
   });
   return band;
@@ -486,6 +529,7 @@ function renderAll() {
   const cards = {};
   const provisional = computeForest({}); // x is height-independent; gives columns
   notes.forEach((note) => {
+    if (isHiddenPrompt(note)) return; // follow-up prompts render no card (pass-through)
     const p = provisional[note.id];
     if (!p) {
       if (note.parent_id) console.warn("Orphaned note (parent missing), not rendered:", note.id);
@@ -498,8 +542,8 @@ function renderAll() {
     el.style.left = `${p.x}px`;
     el.style.top = "0px";
     el.dataset.id = note.id;
-    if (note.type === "text") makeDraggable(el, note); else attachResize(el, note);
-    attachLongPressDetach(el, note);
+    attachResize(el, note);
+    attachNodeDrag(el, note);        // free per-node drag + long-press unlink
     if (note.type === "response") attachSelectionBreakout(el, note);
     const rootId = rootOf(note.id);
     applyFocus(el, rootId);
@@ -613,6 +657,7 @@ function drawWires(svg, pos, cards, orbitPos) {
   };
 
   notes.forEach((note) => {
+    if (isHiddenPrompt(note)) return; // hidden prompts draw no wires of their own
     const cp = pos[note.id];
     if (!cp) return;
     const pw = cards[note.id] ? cards[note.id].offsetWidth : 290;
@@ -623,11 +668,14 @@ function drawWires(svg, pos, cards, orbitPos) {
       Object.values(myOrbits).forEach((o) => wire(cp.x + pw, cp.y, o.x, o.y, "wire-orbit"));
     }
 
-    childrenOf(note.id).forEach((child) => {
+    // Visible children: a forked response reached through a hidden prompt routes
+    // from the move pill that spawned it (strong); direct children (root→response)
+    // anchor at this card's right edge.
+    displayChildrenOf(note.id).forEach(({ node: child, viaPrompt }) => {
       const kp = pos[child.id];
       if (!kp) return;
-      // Route through the spent pill if this child came from an explore move.
-      const via = myOrbits && myOrbits[child.prompt_template];
+      const moveId = viaPrompt && viaPrompt.prompt_template;
+      const via = moveId && myOrbits && myOrbits[moveId];
       const ax = via ? via.x + ORBIT_W : cp.x + pw;
       const ay = via ? via.y : cp.y;
       wire(ax, ay, kp.x, kp.y, "wire");
@@ -672,51 +720,9 @@ function attachFocusClick(el, groupId) {
 
 // ── Drag-and-drop ─────────────────────────────────────────────
 
-// Manual node positioning is gone — the tidy-tree layout owns every node's
-// position now (see layoutForest). Cards keep resize; dragging to reposition is
-// a no-op. (The only drag that returns is gestural long-press detach, slice #25.)
-function makeDraggable(el, note) {
-  attachResize(el, note);
-}
-
-function makeDraggableGroup(_groupEl, _promptNote) {
-  // no-op: layout is auto-computed; nodes are not hand-positioned
-}
-
 // Set true while a drag is moving the cursor, so the click that follows a
 // drag-release doesn't get mistaken for a focus-selecting click.
 let wasDragging = false;
-
-function attachDrag(handle, container, note, onMove) {
-  if (!handle) return;
-  let startX, startY, origX, origY;
-
-  handle.addEventListener("mousedown", (e) => {
-    if (e.target.classList.contains("btn-delete")) return;
-    e.preventDefault();
-    startX = e.clientX;
-    startY = e.clientY;
-    origX = note.x;
-    origY = note.y;
-    container.style.zIndex = 1000;
-
-    function move(e) {
-      if (Math.abs(e.clientX - startX) > 3 || Math.abs(e.clientY - startY) > 3) wasDragging = true;
-      // Divide screen delta by zoom so the card tracks the cursor 1:1 at any scale.
-      onMove(origX + (e.clientX - startX) / cam.k, origY + (e.clientY - startY) / cam.k);
-    }
-    function up() {
-      container.style.zIndex = "";
-      document.removeEventListener("mousemove", move);
-      document.removeEventListener("mouseup", up);
-      scheduleSave();
-      // Clear after the click that follows this mouseup has been dispatched.
-      setTimeout(() => { wasDragging = false; }, 0);
-    }
-    document.addEventListener("mousemove", move);
-    document.addEventListener("mouseup", up);
-  });
-}
 
 function attachResize(el, note) {
   const handle = el.querySelector(".resize-handle");
@@ -750,44 +756,63 @@ function attachResize(el, note) {
   });
 }
 
-// Long-press a card's header (~400ms) to UNLINK it: the card "lifts" (armed
-// cue), and releasing while armed detaches the node + its subtree into a fresh
-// standalone root (no origin link; context-before dropped). A normal quick press
-// or a press that moves early (a pan) does nothing. Already-root nodes are skipped.
+// One header gesture, two outcomes:
+//   • DRAG (move early) → reposition this node freely, pinning manual_x/manual_y
+//     so the tidy-tree flows around it instead of overwriting your placement.
+//   • HOLD STILL ~400ms → "lift" (armed) → release UNLINKS the node + subtree
+//     into a standalone root (non-roots only; context-before dropped).
+// A quick click does neither. The whole subtree shifts with a dragged node, since
+// children auto-flow from its (now pinned) position.
 const LONG_PRESS_MS = 400;
-function attachLongPressDetach(el, note) {
+const DRAG_THRESH = 6;
+function attachNodeDrag(el, note) {
   const header = el.querySelector(".note-header");
   if (!header) return;
-  let timer = null, armed = false, sx = 0, sy = 0;
 
   header.addEventListener("mousedown", (e) => {
     if (e.button !== 0) return;
     if (e.target.closest("button, input, textarea, select, .resize-handle")) return;
-    if (!note.parent_id) return; // already a forest root (incl. break-out roots) — nothing to unlink
-    e.preventDefault(); // don't begin a native text selection during the hold
-    sx = e.clientX; sy = e.clientY; armed = false;
-    timer = setTimeout(() => { armed = true; el.classList.add("lift"); }, LONG_PRESS_MS);
+    e.preventDefault(); // suppress native text selection during press
+
+    const sx = e.clientX, sy = e.clientY;
+    const origX = (note.manual_x != null) ? note.manual_x : parseFloat(el.style.left) || 0;
+    const origY = (note.manual_y != null) ? note.manual_y : (parseFloat(el.style.top) || 0) + el.offsetHeight / 2;
+    let mode = null; // 'drag' | 'unlink'
+    const canUnlink = !!note.parent_id;
+
+    const timer = canUnlink
+      ? setTimeout(() => { if (!mode) { mode = "unlink"; el.classList.add("lift"); } }, LONG_PRESS_MS)
+      : null;
 
     const move = (ev) => {
-      // Moving before the hold completes = not a detach (treat as a pan/cancel).
-      if (!armed && (Math.abs(ev.clientX - sx) > 6 || Math.abs(ev.clientY - sy) > 6)) cancel();
-    };
-    const up = () => {
-      clearTimeout(timer);
-      document.removeEventListener("mousemove", move);
-      document.removeEventListener("mouseup", up);
-      if (armed) {
-        el.classList.remove("lift");
-        // Suppress the trailing click so focus mode doesn't re-select on detach.
-        wasDragging = true;
-        setTimeout(() => { wasDragging = false; }, 0);
-        detachToRoot(note.id); // unlink
+      const dx = ev.clientX - sx, dy = ev.clientY - sy;
+      if (!mode && Math.hypot(dx, dy) > DRAG_THRESH) {
+        mode = "drag";                 // moved before the hold armed → it's a drag
+        if (timer) clearTimeout(timer);
+        el.style.zIndex = 1000;
+      }
+      if (mode === "drag") {
+        const nx = origX + dx / cam.k, ny = origY + dy / cam.k;
+        el.style.left = `${nx}px`;
+        el.style.top = `${ny - el.offsetHeight / 2}px`;
       }
     };
-    const cancel = () => {
-      clearTimeout(timer); armed = false; el.classList.remove("lift");
+    const up = () => {
+      if (timer) clearTimeout(timer);
       document.removeEventListener("mousemove", move);
       document.removeEventListener("mouseup", up);
+      el.style.zIndex = "";
+      if (mode === "drag") {
+        note.manual_x = parseFloat(el.style.left);
+        note.manual_y = parseFloat(el.style.top) + el.offsetHeight / 2;
+        wasDragging = true; setTimeout(() => { wasDragging = false; }, 0);
+        renderAll();      // re-flow children around the pinned position + redraw wires
+        scheduleSave();
+      } else if (mode === "unlink") {
+        el.classList.remove("lift");
+        wasDragging = true; setTimeout(() => { wasDragging = false; }, 0);
+        detachToRoot(note.id);
+      }
     };
     document.addEventListener("mousemove", move);
     document.addEventListener("mouseup", up);

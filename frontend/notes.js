@@ -71,6 +71,17 @@ function createNoteElement(note, onDelete, onPromptRun, onContentChange, onReply
     const header = document.createElement("div");
     header.className = "note-header";
     header.innerHTML = `<span class="note-label">response</span>`;
+    // Delete this branch. (Response cards carry the only delete affordance for a
+    // forked branch now that the follow-up prompt card is hidden.)
+    const delBtn = document.createElement("button");
+    delBtn.className = "btn-delete";
+    delBtn.title = "Delete this branch";
+    delBtn.textContent = "×";
+    delBtn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      onDelete(note.id);
+    });
+    header.appendChild(delBtn);
     inner.appendChild(header);
 
     const body = document.createElement("div");
