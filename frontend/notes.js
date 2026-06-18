@@ -81,76 +81,9 @@ function createNoteElement(note, onDelete, onPromptRun, onContentChange, onReply
     body.appendChild(content);
     inner.appendChild(body);
 
-    // Footer: one-click explore moves + a free-text "ask your own" escape hatch.
-    const footer = document.createElement("div");
-    footer.className = "note-footer";
-
-    const movesRow = document.createElement("div");
-    movesRow.className = "explore-moves";
-
-    // Inline input revealed by needsInput moves; Enter submits, Esc cancels.
-    const inlineWrap = document.createElement("div");
-    inlineWrap.className = "explore-input";
-    const inlineField = document.createElement("input");
-    inlineField.type = "text";
-    inlineWrap.appendChild(inlineField);
-    let activeMove = null;
-
-    function fire(move, value) {
-      inlineWrap.classList.remove("open");
-      inlineField.value = "";
-      activeMove = null;
-      if (onExplore) onExplore(note.id, move, (value || "").trim());
-    }
-
-    EXPLORE_MOVES.forEach((move) => {
-      const b = document.createElement("button");
-      b.className = "btn-move";
-      b.textContent = move.label;
-      b.disabled = !!note.loading;
-      b.addEventListener("click", (e) => {
-        e.stopPropagation();
-        if (!move.needsInput) { fire(move); return; }
-        // Toggle the inline input for this move.
-        if (activeMove === move.id && inlineWrap.classList.contains("open")) {
-          inlineWrap.classList.remove("open");
-          activeMove = null;
-        } else {
-          activeMove = move.id;
-          inlineField.placeholder = move.inputPlaceholder || "…";
-          inlineWrap.classList.add("open");
-          inlineField.focus();
-        }
-      });
-      movesRow.appendChild(b);
-    });
-
-    inlineField.addEventListener("keydown", (e) => {
-      e.stopPropagation();
-      if (e.key === "Enter") {
-        const move = EXPLORE_MOVES.find((m) => m.id === activeMove);
-        if (move && inlineField.value.trim()) fire(move, inlineField.value);
-      } else if (e.key === "Escape") {
-        inlineWrap.classList.remove("open");
-        activeMove = null;
-      }
-    });
-    inlineField.addEventListener("click", (e) => e.stopPropagation());
-
-    const askBtn = document.createElement("button");
-    askBtn.className = "btn-reply";
-    askBtn.textContent = "↩ ask your own";
-    askBtn.disabled = !!note.loading;
-    askBtn.addEventListener("click", (e) => {
-      e.stopPropagation();
-      if (onReply) onReply(note.id);
-    });
-
-    footer.appendChild(movesRow);
-    footer.appendChild(inlineWrap);
-    footer.appendChild(askBtn);
-    inner.appendChild(footer);
-
+    // Explore moves no longer live in a footer — they render as floating orbit
+    // nodes to the right of the card (built in canvas.js renderAll). onExplore /
+    // onReply are wired from there.
     el.appendChild(inner);
     el.appendChild(makeResizeHandle());
     return el;

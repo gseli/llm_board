@@ -247,6 +247,82 @@ body::before {
   stroke-width: 2;
   opacity: 0.55;
 }
+#wires .wire-orbit {
+  fill: none;
+  stroke: var(--ink-soft);
+  stroke-width: 1.2;
+  opacity: 0.3;
+  stroke-dasharray: 3 4;
+}
+
+/* ── Orbit moves (floating explore-move pills right of each response) ── */
+#orbits {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 1px;
+  height: 1px;
+  overflow: visible;
+  z-index: 1;
+}
+.orbit-move {
+  position: absolute;
+  width: 132px;            /* matches ORBIT_W in canvas.js */
+  display: flex;
+  flex-direction: column;
+  transition: left 0.4s cubic-bezier(0.22, 0.61, 0.36, 1),
+              top 0.4s cubic-bezier(0.22, 0.61, 0.36, 1),
+              opacity 0.15s;
+}
+.orbit-move .orbit-label {
+  width: 100%;
+  text-align: left;
+  background: var(--paper);
+  border: 1.5px solid var(--ink);
+  color: var(--ink);
+  font-family: 'Source Code Pro', monospace;
+  font-size: 0.7rem;
+  letter-spacing: 0.03em;
+  padding: 5px 10px;
+  cursor: pointer;
+  box-shadow: 2px 2px 0 var(--ink);
+  transition: transform 0.1s, box-shadow 0.1s, background 0.12s, color 0.12s;
+}
+.orbit-move .orbit-label:hover {
+  background: var(--accent);
+  color: var(--paper);
+  transform: translate(-1px, -1px);
+  box-shadow: 3px 3px 0 var(--ink);
+}
+/* Spent: a move already used to fork — dim but still clickable to re-fork. */
+.orbit-move.spent .orbit-label {
+  opacity: 0.4;
+  box-shadow: 1px 1px 0 var(--ink);
+}
+.orbit-move.spent .orbit-label:hover { opacity: 0.85; }
+/* The "ask your own" pill reads as the quiet escape hatch. */
+.orbit-move.ask .orbit-label {
+  background: transparent;
+  border-style: dashed;
+  color: var(--ink-soft);
+}
+.orbit-move.dimmed { opacity: 0.25; }
+
+/* Inline input revealed by needsInput moves (relate / term). */
+.orbit-move .orbit-input { display: none; }
+.orbit-move.open .orbit-input {
+  display: block;
+  width: 100%;
+  margin-top: 4px;
+  background: var(--paper-dark);
+  border: 1.5px solid var(--accent);
+  color: var(--ink);
+  font-family: 'Source Code Pro', monospace;
+  font-size: 0.7rem;
+  padding: 4px 8px;
+  outline: none;
+}
+.orbit-move .orbit-input::placeholder { color: rgba(90,79,58,0.5); font-style: italic; }
 
 /* Focus mode: non-active groups dim to the background but stay clickable, so a
    click brings one into focus. Their internal controls are guarded in JS
@@ -488,77 +564,8 @@ body::before {
 .note-response .response-content::-webkit-scrollbar-track { background: transparent; }
 .note-response .response-content::-webkit-scrollbar-thumb { background: #3a3020; }
 
-/* ── Response footer: explore moves + reply ── */
-.note-footer {
-  padding: 8px 12px;
-  border-top: 1px solid rgba(212,200,150,0.12);
-  display: flex;
-  flex-direction: column;
-  gap: 7px;
-}
-
-/* one-click explore moves */
-.explore-moves {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 5px;
-}
-.btn-move {
-  background: transparent;
-  border: 1px solid rgba(212,200,150,0.35);
-  color: var(--terminal-ink);
-  font-family: 'Source Code Pro', monospace;
-  font-size: 0.68rem;
-  letter-spacing: 0.04em;
-  padding: 4px 8px;
-  cursor: pointer;
-  transition: background 0.12s, color 0.12s, border-color 0.12s;
-}
-.btn-move:hover:not(:disabled) {
-  background: var(--terminal-accent);
-  color: var(--terminal-bg);
-  border-color: var(--terminal-accent);
-}
-.btn-move:disabled { opacity: 0.3; cursor: not-allowed; }
-
-/* inline input revealed by two-part moves (relate / explain a term) */
-.explore-input { display: none; }
-.explore-input.open { display: block; }
-.explore-input input {
-  width: 100%;
-  background: var(--terminal-bg);
-  border: 1px solid var(--terminal-accent);
-  color: var(--terminal-ink);
-  font-family: 'Source Code Pro', monospace;
-  font-size: 0.72rem;
-  padding: 5px 8px;
-  outline: none;
-}
-.explore-input input::placeholder { color: var(--terminal-dim); font-style: italic; }
-
-.note-footer .btn-reply { align-self: flex-end; }
-
-.btn-reply {
-  background: transparent;
-  border: 1px solid var(--terminal-accent);
-  color: var(--terminal-accent);
-  font-family: 'Source Code Pro', monospace;
-  font-size: 0.72rem;
-  font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.08em;
-  padding: 5px 10px;
-  cursor: pointer;
-  transition: background 0.12s, color 0.12s;
-}
-.btn-reply:hover:not(:disabled) {
-  background: var(--terminal-accent);
-  color: var(--terminal-bg);
-}
-.btn-reply:disabled {
-  opacity: 0.3;
-  cursor: not-allowed;
-}
+/* (The old response footer — explore-moves / btn-move / btn-reply / explore-input —
+   was removed in slice #24; explore moves now render as floating orbit pills.) */
 
 /* ── Bloom's badge on prompt header ── */
 .bloom-badge {
