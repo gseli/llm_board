@@ -1,14 +1,20 @@
+# Copy this file to config.yaml (in the repo root) and fill in your API key.
+# config.yaml is gitignored — your key is never committed.
+#
+# Pick ONE provider below: set `provider:` and fill in that provider's key block.
+# Groq and Gemini both have free tiers, so you can try the board for $0.
+
 provider: mistral   # or groq, gemini
 
 mistral:
-  api_key: YOUR_MISTRAL_API_KEY_HERE
+  api_key: YOUR_MISTRAL_API_KEY_HERE   # get one: https://console.mistral.ai/api-keys (free tier)
   model: mistral-small-latest
   # Other options: mistral-medium-latest, mistral-large-latest
 
 # groq:
-#   api_key: YOUR_GROQ_API_KEY_HERE
+#   api_key: YOUR_GROQ_API_KEY_HERE    # get one: https://console.groq.com/keys (free tier)
 #   model: llama3-8b-8192
 
 # gemini:
-#   api_key: YOUR_GEMINI_API_KEY_HERE
+#   api_key: YOUR_GEMINI_API_KEY_HERE  # get one: https://aistudio.google.com/app/apikey (free tier)
 #   model: gemini-1.5-flash

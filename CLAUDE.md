@@ -25,6 +25,16 @@ uvicorn main:app --reload
 
 ---
 
+## Automation & tooling
+
+Project skills + hooks live in `.claude/` (`AUTOMATION_SETUP.md` is the original proposal; the running logs are `docs/director_improvements.md` and `docs/automation_opportunities.md`).
+
+- **`verify-board` skill** — drives the app headlessly to verify a frontend change: starts the backend on `:8765`, loads the `_verify` fixture with `/prompt` and `POST /board` intercepted (no live LLM call, fixture never mutated), runs an assertions snippet against `frontend/test/verify-harness.mjs`, prints JSON, tears down. **The harness runs only from `/home/elizabet`** (where `playwright` resolves). Start the server with `run_in_background: true` and `--app-dir <backend>` — a `(uvicorn … &)` subshell gets reaped between Bash calls in this sandbox. Tear down in a **standalone** call scoped to `pgrep -f "port 8765"` → `kill -9` (never bare `pkill uvicorn` — it would kill the user's `:8000 --reload` dev server; never chain after `kill`, exit 144 short-circuits `&&`).
+- **`wrap-up` skill** — end-of-session retrospective: appends to `docs/director_improvements.md`, appends to `docs/automation_opportunities.md`, and folds durable learnings into this file.
+- **Co-author hook** — a `PreToolUse` Bash hook in `.claude/settings.json` blocks any commit carrying a `Co-Authored-By: Claude` trailer (repo convention; commits omit it). It parses the command from **stdin JSON** (`jq -r '.tool_input.command'`) — `$CLAUDE_TOOL_INPUT` is empty in Claude Code 2.1.x.
+
+---
+
 ## Project structure
 
 ```
