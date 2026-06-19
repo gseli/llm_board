@@ -92,6 +92,19 @@ function createNoteElement(note, onDelete, onPromptRun, onContentChange, onReply
     body.appendChild(content);
     inner.appendChild(body);
 
+    // Token counter — make the cost of full-history follow-ups legible. Only shown
+    // once a response carries more than a single user+assistant exchange (i.e. it's
+    // a follow-up that resent prior history). Estimate ~4 chars per token.
+    const convo = note.conversation;
+    if (Array.isArray(convo) && convo.length > 2) {
+      const chars = convo.reduce((n, m) => n + (m.content ? m.content.length : 0), 0);
+      const tokens = Math.round(chars / 4);
+      const footer = document.createElement("div");
+      footer.className = "token-count";
+      footer.textContent = `${convo.length} cards · ~${tokens.toLocaleString()} tokens`;
+      inner.appendChild(footer);
+    }
+
     // Explore moves no longer live in a footer — they render as floating orbit
     // nodes to the right of the card (built in canvas.js renderAll). onExplore /
     // onReply are wired from there.

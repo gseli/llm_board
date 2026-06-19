@@ -29,7 +29,7 @@ uvicorn main:app --reload
 
 Project skills + hooks live in `.claude/` (`AUTOMATION_SETUP.md` is the original proposal; the running logs are `docs/director_improvements.md` and `docs/automation_opportunities.md`).
 
-- **`verify-board` skill** — drives the app headlessly to verify a frontend change: starts the backend on `:8765`, loads the `_verify` fixture with `/prompt` and `POST /board` intercepted (no live LLM call, fixture never mutated), runs an assertions snippet against `frontend/test/verify-harness.mjs`, prints JSON, tears down. **The harness runs only from `/home/elizabet`** (where `playwright` resolves). Start the server with `run_in_background: true` and `--app-dir <backend>` — a `(uvicorn … &)` subshell gets reaped between Bash calls in this sandbox. Tear down in a **standalone** call scoped to `pgrep -f "port 8765"` → `kill -9` (never bare `pkill uvicorn` — it would kill the user's `:8000 --reload` dev server; never chain after `kill`, exit 144 short-circuits `&&`).
+- **`verify-board` skill** — drives the app headlessly to verify a frontend change: starts the backend on `:8765`, loads the `_verify` fixture with `/prompt` and `POST /board` intercepted (no live LLM call, fixture never mutated), runs an assertions snippet against `frontend/test/verify-harness.mjs`, prints JSON, tears down. **The harness runs only from `/home/elizabet`** (where `playwright` resolves). Start the server with `run_in_background: true` and `--app-dir <backend>` — a `(uvicorn … &)` subshell gets reaped between Bash calls in this sandbox. Tear down in a **standalone** call scoped to `pgrep -f "uvicorn.*8765"` → `kill -9` (match `uvicorn.*8765`, **not** bare `port 8765` — the latter matches the teardown command's own line and gives false "STILL RUNNING" readings; never bare `pkill uvicorn` — it would kill the user's `:8000 --reload` dev server; never chain after `kill`, exit 144 short-circuits `&&`).
 - **`wrap-up` skill** — end-of-session retrospective: appends to `docs/director_improvements.md`, appends to `docs/automation_opportunities.md`, and folds durable learnings into this file.
 - **Co-author hook** — a `PreToolUse` Bash hook in `.claude/settings.json` blocks any commit carrying a `Co-Authored-By: Claude` trailer (repo convention; commits omit it). It parses the command from **stdin JSON** (`jq -r '.tool_input.command'`) — `$CLAUDE_TOOL_INPUT` is empty in Claude Code 2.1.x.
 
@@ -63,7 +63,7 @@ LLM_Board/
 |---|---|
 | `text` | Plain freeform note. No LLM interaction. Draggable, resizable. |
 | `prompt` | Textarea + Run button + Bloom's `TEMPLATES` selector. **Only a ROOT prompt renders as a card** — its answer appears to the right. A follow-up prompt (created by an explore move) is **hidden**: it carries the move + context in the data, but the orbit move pill is the visible "question", so the answer connects straight through it. |
-| `response` | LLM output, read-only, with a delete `×`. Its explore moves are **floating orbit pills to the right** (not a footer); clicking one forks a child branch. |
+| `response` | LLM output, read-only, with a delete `×`. Its explore moves are **floating orbit pills to the right** (not a footer); clicking one forks a child branch. Shows a dim **token-count footer** (`N cards · ~M tokens`) only when its `conversation` array has more than one exchange (`length > 2`) — `~4 chars/token`, built in `notes.js`, styled `.token-count`. |
 
 ### Data model
 
@@ -214,7 +214,6 @@ To add a new provider:
 - **Keyboard-first interaction (#12)** — still open: visible focus rings + key shortcuts. Pairs naturally with the tree (arrow keys to walk it, number keys to fire orbit moves).
 - **Smarter new-node placement** — `placeNewNode` finds a spot once and never re-tidies, so dense forking can produce overlap until you press ✦ Tidy. A height-aware / clear-slot placement would reduce manual tidying.
 - **Explore moves are a fixed set** — LLM-generated *contextual* suggestions (Perplexity-style, derived from the answer) are a deferred next step. Root-prompt moves aren't unified with the follow-up set yet.
-- **Token counter** — planned: a small label on response cards showing e.g. `4 cards · ~3,200 tokens`.
 - **Chain summarization** — deprioritized: a user-triggered "Collapse into summary card" for very long branches.
 - **Understanding markers / spaced review** — *demoted to optional*. The tool's soul is discovery, not memorization; markers would be an opt-in retention add-on, not a headline.
 
