@@ -2,9 +2,31 @@
   "permissions": {
     "allow": [
       "Bash(pip install *)",
-      "Bash(uvicorn main:app --host 127.0.0.1 --port 8765)",
-      "Bash(curl -s http://127.0.0.1:8765/board/default)",
-      "Bash(kill %1)"
+      "Bash(uvicorn main:app --port 8765*)",
+      "Bash(uvicorn main:app --reload --port 8000*)",
+      "Bash(curl -s http://localhost:8765/*)",
+      "Bash(curl -s -o /dev/null *)",
+      "Bash(node --check *)",
+      "Bash(node *.mjs)",
+      "Bash(pgrep -f *)",
+      "Bash(kill *)",
+      "Bash(gh pr *)",
+      "Bash(gh issue *)",
+      "WebSearch",
+      "WebFetch(domain:arxiv.org)"
+    ]
+  },
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "CMD=$(jq -r '.tool_input.command'); if echo \"$CMD\" | grep -qi 'co-authored-by: claude'; then echo 'Blocked: this repo forbids the Co-Authored-By: Claude trailer.' >&2; exit 2; fi"
+          }
+        ]
+      }
     ]
   }
 }

@@ -116,9 +116,10 @@ function scheduleSave() {
   }, 500);
 }
 
-// ── Themed modal (replaces native window.prompt / window.alert) ───
+// ── Themed modal (replaces native window.prompt / window.alert / confirm) ───
 // askName resolves to the trimmed string (Enter / ok) or null (Esc / cancel).
 // notify shows an info dialog with a single ok; resolves when dismissed.
+// confirm shows ok + cancel; resolves true (ok) / false (cancel / Esc / backdrop).
 
 const modalEls = {
   overlay: document.getElementById("modal-overlay"),
@@ -129,12 +130,16 @@ const modalEls = {
   cancel: document.getElementById("modal-cancel"),
 };
 
-function openModal({ title, message = "", initial, withInput }) {
+function openModal({ title, message = "", initial, withInput, withCancel, okLabel }) {
+  // withCancel defaults to withInput (a prompt always offers cancel); notify
+  // passes neither (ok-only); confirm passes withCancel without withInput.
+  const showCancel = withCancel ?? withInput;
   return new Promise((resolve) => {
     modalEls.title.textContent = title;
     modalEls.message.textContent = message;
+    modalEls.ok.textContent = okLabel ?? "ok";
     modalEls.input.hidden = !withInput;
-    modalEls.cancel.hidden = !withInput;       // info dialogs are ok-only
+    modalEls.cancel.hidden = !showCancel;
     if (withInput) {
       modalEls.input.value = initial ?? "";
     }
@@ -171,10 +176,13 @@ function openModal({ title, message = "", initial, withInput }) {
 
 const askName = (title, initial) => openModal({ title, initial, withInput: true });
 const notify = (title, message) => openModal({ title, message, withInput: false });
+const confirm = (title, message, okLabel = "delete") =>
+  openModal({ title, message, withInput: false, withCancel: true, okLabel }).then((r) => r === true);
 
 // ── Multi-board switcher ──────────────────────────────────────
 
 const boardSelect = document.getElementById("board-select");
+const btnDeleteBoard = document.getElementById("btn-delete-board");
 
 // Fetch the board list and rebuild the <select>, keeping currentBoard selected.
 async function refreshBoardList() {
@@ -186,6 +194,8 @@ async function refreshBoardList() {
     .map((n) => `<option value="${n}">${n}</option>`)
     .join("");
   boardSelect.value = currentBoard;
+  // The default board is the always-present home — never deletable.
+  btnDeleteBoard.hidden = currentBoard === "default";
 }
 
 // Lowest free "New Board" / "New Board N" name given the existing names.
@@ -285,6 +295,45 @@ async function renameBoard() {
   }
   currentBoard = name;
   localStorage.setItem("llmboard.lastBoard", currentBoard);
+  await refreshBoardList();
+}
+
+// Delete the currently-selected board (DELETE /board/:name) after a confirm,
+// then fall back to the default board. The default board is protected and
+// cannot be deleted (the control is hidden when it's active; the server also
+// rejects it).
+async function deleteBoard() {
+  if (currentBoard === "default") return;
+  const target = currentBoard;
+  const ok = await confirm(
+    "Delete this board?",
+    `“${target}” and everything on it will be permanently removed. This can’t be undone.`
+  );
+  if (!ok) return;
+
+  // Drop any pending save to the board we're deleting — don't resurrect it.
+  if (saveTimer) {
+    clearTimeout(saveTimer);
+    saveTimer = null;
+    setSaveStatus("");
+  }
+  const res = await fetch(`/board/${encodeURIComponent(target)}`, { method: "DELETE" });
+  if (!res.ok) {
+    const { detail } = await res.json().catch(() => ({}));
+    await notify("Couldn't delete", String(detail || res.status));
+    return;
+  }
+  // Reset board-scoped view state and fall back to default.
+  undoStack.length = 0;
+  showUndo();
+  focusMode = false;
+  activeGroupId = null;
+  document.getElementById("btn-focus").classList.remove("active");
+
+  currentBoard = "default";
+  localStorage.setItem("llmboard.lastBoard", currentBoard);
+  await loadBoard();
+  fitAll();
   await refreshBoardList();
 }
 
@@ -1354,6 +1403,7 @@ window.addEventListener("keydown", (e) => {
 boardSelect.addEventListener("change", (e) => switchBoard(e.target.value));
 document.getElementById("btn-new-board").addEventListener("click", () => newBoard());
 document.getElementById("btn-rename-board").addEventListener("click", () => renameBoard());
+document.getElementById("btn-delete-board").addEventListener("click", () => deleteBoard());
 
 // ── Boot ──────────────────────────────────────────────────────
 

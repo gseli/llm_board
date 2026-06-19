@@ -107,6 +107,8 @@ body::before {
 
 #btn-new-board:hover    { background: var(--ink); color: var(--paper); }
 #btn-rename-board:hover  { background: var(--ink); color: var(--paper); }
+#btn-delete-board:hover  { background: var(--accent); color: var(--paper); border-color: var(--ink); }
+#btn-delete-board[hidden] { display: none; }
 
 /* ── Modal (themed prompt / notice — replaces native window.prompt/alert) ── */
 #modal-overlay {
@@ -711,6 +713,16 @@ body.tidying #orbits .orbit-move {
 .note-response .response-content::-webkit-scrollbar { width: 4px; }
 .note-response .response-content::-webkit-scrollbar-track { background: transparent; }
 .note-response .response-content::-webkit-scrollbar-thumb { background: #3a3020; }
+
+/* history/token cost — dim footer label on the dark response card */
+.note-response .token-count {
+  font-family: 'Source Code Pro', 'Courier New', monospace;
+  font-size: 0.62rem;
+  color: var(--terminal-dim);
+  padding: 5px 10px 7px;
+  border-top: 1px solid rgba(212,200,150,0.12);
+  letter-spacing: 0.02em;
+}
 
 /* (The old response footer — explore-moves / btn-move / btn-reply / explore-input —
    was removed in slice #24; explore moves now render as floating orbit pills.) */
