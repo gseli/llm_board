@@ -158,9 +158,43 @@ body::before {
 }
 
 #btn-new-board:hover    { background: var(--ink); color: var(--paper); }
-#btn-rename-board:hover  { background: var(--ink); color: var(--paper); }
-#btn-delete-board:hover  { background: var(--accent); color: var(--paper); border-color: var(--ink); }
-#btn-delete-board[hidden] { display: none; }
+
+/* ── Board actions menu (⋯ kebab → Rename / Delete) ── */
+#board-menu-wrap { position: relative; display: inline-flex; }
+#btn-board-menu { line-height: 1; }
+#btn-board-menu:hover,
+#btn-board-menu[aria-expanded="true"] { background: var(--ink); color: var(--paper); }
+#board-menu {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  z-index: 200;
+  min-width: 168px;
+  background: var(--paper);
+  border: 1.5px solid var(--ink);
+  box-shadow: 4px 4px 0 var(--ink);
+  display: flex;
+  flex-direction: column;
+  padding: 4px;
+  gap: 2px;
+}
+#board-menu[hidden] { display: none; }
+#board-menu button {
+  font-family: 'Source Code Pro', monospace;
+  font-size: 0.72rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-align: left;
+  padding: 8px 12px;
+  background: transparent;
+  border: none;
+  color: var(--ink);
+  cursor: pointer;
+  transition: background 0.12s, color 0.12s;
+}
+#menu-rename-board:hover { background: var(--ink); color: var(--paper); }
+#menu-delete-board:hover { background: var(--accent); color: var(--paper); }
+#menu-delete-board[hidden] { display: none; }
 
 /* ── Modal (themed prompt / notice — replaces native window.prompt/alert) ── */
 #modal-overlay {
@@ -663,18 +697,26 @@ body.tidying #orbits .orbit-move {
 }
 .orbit-move.dimmed { opacity: 0.25; }
 
-/* Inline input revealed by needsInput moves (relate / term). */
+/* Inline input revealed by needsInput moves (relate / term / new-tree / ask).
+   When open the pill widens and lifts above its neighbours so the field reads as
+   a clean popover instead of overlapping the pills/cards stacked around it. */
 .orbit-move .orbit-input { display: none; }
+.orbit-move.open {
+  width: 200px;        /* roomier to type in than the 132px resting pill */
+  z-index: 500;        /* sit above sibling pills and nearby cards */
+}
+.orbit-move.open .orbit-label { box-shadow: 3px 3px 0 var(--ink); }
 .orbit-move.open .orbit-input {
   display: block;
   width: 100%;
   margin-top: 4px;
-  background: var(--paper-dark);
+  background: #fffaf0;  /* opaque so whatever it covers doesn't bleed through */
   border: 1.5px solid var(--accent);
+  box-shadow: 3px 3px 0 var(--ink);
   color: var(--ink);
   font-family: 'Source Code Pro', monospace;
-  font-size: 0.7rem;
-  padding: 4px 8px;
+  font-size: 0.72rem;
+  padding: 6px 9px;
   outline: none;
 }
 .orbit-move .orbit-input::placeholder { color: rgba(90,79,58,0.5); font-style: italic; }
@@ -894,6 +936,71 @@ body.tidying #orbits .orbit-move {
   max-height: 420px;
   overflow-y: auto;
 }
+/* Rendered Markdown inside a response card. `.md` switches off the pre-wrap used
+   by plain/loading text so block elements (p, lists, headings) flow normally;
+   <pre> still preserves code formatting. Tuned to the dark terminal theme. */
+.note-response .response-content.md { white-space: normal; }
+.note-response .response-content.md > :first-child { margin-top: 0; }
+.note-response .response-content.md > :last-child { margin-bottom: 0; }
+.note-response .response-content.md p { margin: 0 0 0.7em; }
+.note-response .response-content.md h1,
+.note-response .response-content.md h2,
+.note-response .response-content.md h3,
+.note-response .response-content.md h4,
+.note-response .response-content.md h5,
+.note-response .response-content.md h6 {
+  font-family: 'Source Code Pro', monospace;
+  color: var(--terminal-accent);
+  line-height: 1.3;
+  margin: 0.9em 0 0.45em;
+}
+.note-response .response-content.md h1 { font-size: 1.05rem; }
+.note-response .response-content.md h2 { font-size: 0.98rem; }
+.note-response .response-content.md h3 { font-size: 0.9rem; }
+.note-response .response-content.md h4,
+.note-response .response-content.md h5,
+.note-response .response-content.md h6 { font-size: 0.84rem; }
+.note-response .response-content.md strong { color: #e8dca0; font-weight: 600; }
+.note-response .response-content.md em { font-style: italic; }
+.note-response .response-content.md ul,
+.note-response .response-content.md ol { margin: 0 0 0.7em; padding-left: 1.4em; }
+.note-response .response-content.md li { margin: 0.15em 0; }
+.note-response .response-content.md code {
+  font-family: 'Source Code Pro', monospace;
+  font-size: 0.78rem;
+  background: rgba(212, 200, 150, 0.12);
+  color: #e8dca0;
+  padding: 0.05em 0.35em;
+  border-radius: 2px;
+}
+.note-response .response-content.md pre {
+  background: #120f0a;
+  border: 1px solid rgba(212, 200, 150, 0.14);
+  padding: 9px 11px;
+  margin: 0 0 0.7em;
+  overflow-x: auto;
+}
+.note-response .response-content.md pre code {
+  background: none;
+  padding: 0;
+  color: var(--terminal-ink);
+  font-size: 0.78rem;
+  line-height: 1.5;
+}
+.note-response .response-content.md blockquote {
+  border-left: 2px solid var(--terminal-dim);
+  margin: 0 0 0.7em;
+  padding-left: 0.8em;
+  color: var(--terminal-dim);
+  font-style: italic;
+}
+.note-response .response-content.md a {
+  color: var(--terminal-accent);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.note-response .response-content.md a:hover { color: #e8dca0; }
+
 .note-response .response-content.loading {
   color: var(--terminal-dim);
   font-style: italic;

@@ -53,7 +53,14 @@ function viewportCenter() {
 function fitAll() {
   // Measure only rendered note content (standalone notes + chain groups), not any
   // other layers that may live inside the world (e.g. a future SVG wires layer).
-  const els = [...canvas.querySelectorAll(":scope > .note, :scope > [data-group-id]")];
+  let els = [...canvas.querySelectorAll(":scope > .note, :scope > [data-group-id]")];
+  // In focus mode, frame just the active tree — fitting the whole forest would
+  // zoom out past the dimmed groups the user is deliberately ignoring, so "fit"
+  // and "focus" pulled against each other. Now fit honours the focus.
+  if (focusMode && activeGroupId) {
+    const inGroup = els.filter((el) => el.dataset.id && rootOf(el.dataset.id) === activeGroupId);
+    if (inGroup.length) els = inGroup;
+  }
   const r = document.getElementById("canvas-container").getBoundingClientRect();
   if (!els.length) {
     cam.x = 0; cam.y = 0; cam.k = 1;
@@ -232,7 +239,7 @@ const confirm = (title, message, okLabel = "delete") =>
 // ── Multi-board switcher ──────────────────────────────────────
 
 const boardSelect = document.getElementById("board-select");
-const btnDeleteBoard = document.getElementById("btn-delete-board");
+const btnDeleteBoard = document.getElementById("menu-delete-board");
 
 // Fetch the board list and rebuild the <select>, keeping currentBoard selected.
 async function refreshBoardList() {
@@ -538,8 +545,14 @@ function buildHistory(responseNoteId) {
       const text = (current.content || "").trim();
       let built;
       if (current.parent_id) {
-        const move = EXPLORE_MOVES.find((m) => m.id === current.prompt_template);
-        if (move) built = move.build(text);
+        // Free-text follow-up ("ask your own", or a legacy null-template reply):
+        // the stored content is the literal question — replay it verbatim.
+        if (current.prompt_template === "__ask__" || current.prompt_template === null) {
+          built = text || undefined;
+        } else {
+          const move = EXPLORE_MOVES.find((m) => m.id === current.prompt_template);
+          if (move) built = move.build(text);
+        }
       }
       if (built === undefined && text) {
         const tpl = TEMPLATES.find((t) => t.id === (current.prompt_template || "explain_term")) || TEMPLATES[0];
@@ -551,26 +564,6 @@ function buildHistory(responseNoteId) {
   }
 
   return messages;
-}
-
-function replyToResponse(responseNoteId) {
-  const responseNote = notes.find((n) => n.id === responseNoteId);
-  if (!responseNote) return;
-  if (responseNote.loading) return;
-  dismissOrbitCoach(); // forking via "ask your own" also counts — retire the tip
-
-  // Free forking: a response can have many follow-ups. No one-child guard.
-  const history = buildHistory(responseNoteId);
-  const threadId = responseNote.thread_id || responseNote.parent_id;
-
-  addNote("prompt", {
-    parent_id: responseNoteId,
-    thread_id: threadId,
-    conversation_context: history,
-    prompt_template: null, // free-text reply — not an explore move (no spent/orbit match)
-  });
-
-  renderAll();
 }
 
 // One-click explore: build the move's prompt, create a NEW follow-up branch under
@@ -722,7 +715,10 @@ function orbitMovesFor(note) {
   return [
     ...EXPLORE_MOVES,
     { id: "__newtree__", label: "↗ new tree", needsInput: true, inputPlaceholder: "which term?", breakout: true },
-    { id: "__ask__", label: "↩ ask your own", ask: true },
+    // "Ask your own" is a free-text follow-up: it reveals an input like the other
+    // needsInput pills, and its build() is the identity — the typed text IS the
+    // question sent (buildHistory special-cases "__ask__" to replay it verbatim).
+    { id: "__ask__", label: "↩ ask your own", ask: true, needsInput: true, inputPlaceholder: "your question…", build: (i) => i },
   ];
 }
 // Vertical space the orbit cluster needs, so a response reserves room for its pills.
@@ -844,7 +840,7 @@ function renderAll() {
   notes.forEach((note) => {
     if (isHiddenPrompt(note)) return; // follow-up prompts render no card (pass-through)
     const el = createNoteElement(
-      note, deleteNote, runPrompt, updateNote, replyToResponse, exploreFromResponse
+      note, deleteNote, runPrompt, updateNote, null, exploreFromResponse
     );
     el.style.position = "absolute";
     el.style.left = `${note.x || 0}px`;
@@ -896,8 +892,8 @@ function dismissOrbitCoach() {
 }
 if (coachOrbit) {
   document.getElementById("coach-dismiss").addEventListener("click", dismissOrbitCoach);
-  // Esc dismisses; so does actually using a move (handled in exploreFromResponse /
-  // replyToResponse), so the tip never lingers once the user has done the thing.
+  // Esc dismisses; so does actually firing a move (handled in exploreFromResponse),
+  // so the tip never lingers once the user has done the thing.
   document.addEventListener("keydown", (e) => {
     if (e.key === "Escape" && !coachOrbit.hidden) dismissOrbitCoach();
   });
@@ -1131,10 +1127,6 @@ function buildOrbitPill(note, move, spent, dimmed) {
   label.textContent = move.label;
   pill.appendChild(label);
 
-  if (move.ask) {
-    label.addEventListener("click", (e) => { e.stopPropagation(); if (wasDragging) return; replyToResponse(note.id); });
-    return pill;
-  }
   if (!move.needsInput) {
     label.addEventListener("click", (e) => { e.stopPropagation(); if (wasDragging) return; exploreFromResponse(note.id, move, ""); });
     return pill;
@@ -1416,14 +1408,8 @@ document.getElementById("btn-new-prompt").addEventListener("click", () => {
   const note = addNote("prompt");
   renderAll();
 });
-// Welcome-card CTA: same as "+ prompt note", but also focus the new note's
-// textarea so the user can start typing the term immediately.
-document.getElementById("empty-add-prompt").addEventListener("click", () => {
-  const note = addNote("prompt");
-  renderAll();
-  const ta = canvas.querySelector(`.note[data-id="${note.id}"] textarea`);
-  if (ta) ta.focus();
-});
+// Welcome-card CTA: create a prompt and focus it so the user can type the term.
+document.getElementById("empty-add-prompt").addEventListener("click", () => addPromptAndFocus());
 document.getElementById("btn-focus").addEventListener("click", (e) => {
   focusMode = !focusMode;
   if (focusMode) {
@@ -1487,6 +1473,18 @@ document.getElementById("btn-tidy").addEventListener("click", tidyTree);
   // pan replaces the native scroll lost when the container went overflow:hidden, so
   // trackpad / no-middle-button users can still move around.
   container.addEventListener("wheel", (e) => {
+    // If the pointer is over a scrollable region inside a note (a long answer or
+    // a note textarea) that can still scroll in the wheel's direction, let the
+    // browser scroll it instead of panning the canvas. Without this the canvas
+    // ate every wheel event and you had to grab the tiny in-note scrollbar.
+    if (!e.ctrlKey && !e.metaKey) {
+      const sc = e.target.closest(".response-content, .note textarea");
+      if (sc && sc.scrollHeight > sc.clientHeight + 1) {
+        const down = e.deltaY > 0 && sc.scrollTop + sc.clientHeight < sc.scrollHeight - 1;
+        const up = e.deltaY < 0 && sc.scrollTop > 0;
+        if (down || up) return; // native scroll handles it; don't pan
+      }
+    }
     e.preventDefault();
     if (e.ctrlKey || e.metaKey) {
       const r = container.getBoundingClientRect();
@@ -1498,6 +1496,17 @@ document.getElementById("btn-tidy").addEventListener("click", tidyTree);
       applyCamera();
     }
   }, { passive: false });
+
+  // Double-click empty canvas → drop a prompt note right where you clicked (and
+  // focus it), so you don't have to travel to the toolbar to start a thought.
+  // Ignored on cards/controls so double-clicking text/headers still behaves.
+  container.addEventListener("dblclick", (e) => {
+    if (e.target.closest(".note, #zoom-ui, #empty-state, #coach-orbit, #board-menu")) return;
+    const r = container.getBoundingClientRect();
+    const wx = (e.clientX - r.left - cam.x) / cam.k;
+    const wy = (e.clientY - r.top - cam.y) / cam.k;
+    addPromptAndFocus({ x: wx, y: wy });
+  });
 })();
 
 // Zoom UI buttons
@@ -1511,9 +1520,24 @@ document.getElementById("zoom-out").addEventListener("click", () => {
 });
 document.getElementById("zoom-fit").addEventListener("click", fitAll);
 
-// Keyboard: + / − zoom around center, 0 fits all. Ignored while typing.
+// Create a prompt note and focus its textarea so the user can type immediately.
+// Shared by the welcome CTA, the "n" shortcut, and double-click-to-create. With
+// an explicit {x, y} (world coords) the note lands there; otherwise it's placed
+// near the viewport like the toolbar button.
+function addPromptAndFocus(at) {
+  const note = addNote("prompt", at || {});
+  renderAll();
+  const ta = canvas.querySelector(`.note[data-id="${note.id}"] textarea`);
+  if (ta) ta.focus();
+  return note;
+}
+
+// Keyboard: + / − zoom around center, 0 fits all; n = new prompt, t = new text.
+// Ignored while typing or while a modal is open.
 window.addEventListener("keydown", (e) => {
   if (e.target.tagName === "INPUT" || e.target.tagName === "TEXTAREA") return;
+  if (!modalEls.overlay.hidden) return; // don't act behind an open dialog
+  if (e.metaKey || e.ctrlKey || e.altKey) return; // leave browser/OS combos alone
   if (e.key === "+" || e.key === "=") {
     const c = viewportCenter();
     zoomAt(c.x, c.y, cam.k * 1.25);
@@ -1522,15 +1546,46 @@ window.addEventListener("keydown", (e) => {
     zoomAt(c.x, c.y, cam.k / 1.25);
   } else if (e.key === "0") {
     fitAll();
+  } else if (e.key === "n" || e.key === "N") {
+    e.preventDefault();
+    addPromptAndFocus();
+  } else if (e.key === "t" || e.key === "T") {
+    e.preventDefault();
+    addNote("text");
+    renderAll();
   }
 });
 
 // ── Board switcher events ─────────────────────────────────────
 
 boardSelect.addEventListener("change", (e) => switchBoard(e.target.value));
+// Double-click the board name → rename it (a quick, discoverable shortcut for
+// the menu's Rename). preventDefault stops the native dropdown from opening.
+boardSelect.addEventListener("dblclick", (e) => { e.preventDefault(); renameBoard(); });
 document.getElementById("btn-new-board").addEventListener("click", () => newBoard());
-document.getElementById("btn-rename-board").addEventListener("click", () => renameBoard());
-document.getElementById("btn-delete-board").addEventListener("click", () => deleteBoard());
+
+// Board-actions kebab menu (⋯): consolidates rename + delete behind one labelled
+// control instead of two cryptic glyph buttons. Opens a small popover; closes on
+// pick, outside click, or Esc.
+const boardMenu = document.getElementById("board-menu");
+const btnBoardMenu = document.getElementById("btn-board-menu");
+function setBoardMenu(open) {
+  boardMenu.hidden = !open;
+  btnBoardMenu.setAttribute("aria-expanded", String(open));
+}
+btnBoardMenu.addEventListener("click", (e) => {
+  e.stopPropagation();
+  setBoardMenu(boardMenu.hidden);
+});
+document.getElementById("menu-rename-board").addEventListener("click", () => { setBoardMenu(false); renameBoard(); });
+document.getElementById("menu-delete-board").addEventListener("click", () => { setBoardMenu(false); deleteBoard(); });
+// Dismiss the menu on any outside click or Esc.
+document.addEventListener("click", (e) => {
+  if (!boardMenu.hidden && !e.target.closest("#board-menu-wrap")) setBoardMenu(false);
+});
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape" && !boardMenu.hidden) setBoardMenu(false);
+});
 
 // ── Boot ──────────────────────────────────────────────────────
 
