@@ -38,6 +38,151 @@ const EXPLORE_MOVES = [
   { id: "term",    label: "Explain a term…",   needsInput: true,  inputPlaceholder: "which term?", build: (i) => `Explain the term "${i}" as it was used above — define it simply and say how it connects to what we were discussing.` },
 ];
 
+// ── Minimal, DOM-safe Markdown renderer ──────────────────────
+// LLM answers come back as Markdown; rendering them as plain text showed literal
+// **stars** etc. This builds REAL DOM nodes with textContent (never innerHTML),
+// so answer text can't inject markup or script even though it's model output —
+// the same safety stance as the board-name handling. Supports the subset chat
+// answers actually use: headings, bold, italic, inline code, fenced code blocks,
+// blockquotes, ordered/unordered lists, links (http/https/mailto only), and
+// paragraphs. Returns a DocumentFragment to append into the response card.
+function renderMarkdown(src) {
+  const root = document.createDocumentFragment();
+  const lines = (src || "").replace(/\r\n/g, "\n").split("\n");
+  let i = 0;
+  let para = [];
+
+  const flushPara = () => {
+    if (!para.length) return;
+    const p = document.createElement("p");
+    renderInline(para.join(" "), p);
+    root.appendChild(p);
+    para = [];
+  };
+
+  while (i < lines.length) {
+    const line = lines[i];
+
+    // Fenced code block ``` … ```
+    if (/^```/.test(line)) {
+      flushPara();
+      const code = [];
+      i++;
+      while (i < lines.length && !/^```\s*$/.test(lines[i])) { code.push(lines[i]); i++; }
+      i++; // consume the closing fence
+      const pre = document.createElement("pre");
+      const c = document.createElement("code");
+      c.textContent = code.join("\n");
+      pre.appendChild(c);
+      root.appendChild(pre);
+      continue;
+    }
+
+    // Heading # … ######
+    const h = line.match(/^(#{1,6})\s+(.*)$/);
+    if (h) {
+      flushPara();
+      const el = document.createElement("h" + h[1].length);
+      renderInline(h[2], el);
+      root.appendChild(el);
+      i++;
+      continue;
+    }
+
+    // Blockquote (one or more > lines)
+    if (/^>\s?/.test(line)) {
+      flushPara();
+      const quote = [];
+      while (i < lines.length && /^>\s?/.test(lines[i])) { quote.push(lines[i].replace(/^>\s?/, "")); i++; }
+      const bq = document.createElement("blockquote");
+      renderInline(quote.join(" "), bq);
+      root.appendChild(bq);
+      continue;
+    }
+
+    // Unordered list (-, *, +)
+    if (/^\s*[-*+]\s+/.test(line)) {
+      flushPara();
+      const ul = document.createElement("ul");
+      while (i < lines.length && /^\s*[-*+]\s+/.test(lines[i])) {
+        const li = document.createElement("li");
+        renderInline(lines[i].replace(/^\s*[-*+]\s+/, ""), li);
+        ul.appendChild(li);
+        i++;
+      }
+      root.appendChild(ul);
+      continue;
+    }
+
+    // Ordered list (1. 2. …)
+    if (/^\s*\d+\.\s+/.test(line)) {
+      flushPara();
+      const ol = document.createElement("ol");
+      while (i < lines.length && /^\s*\d+\.\s+/.test(lines[i])) {
+        const li = document.createElement("li");
+        renderInline(lines[i].replace(/^\s*\d+\.\s+/, ""), li);
+        ol.appendChild(li);
+        i++;
+      }
+      root.appendChild(ol);
+      continue;
+    }
+
+    // Blank line → paragraph break
+    if (/^\s*$/.test(line)) { flushPara(); i++; continue; }
+
+    para.push(line);
+    i++;
+  }
+  flushPara();
+  return root;
+}
+
+// Inline spans: scan left→right, picking the earliest of code / bold / italic /
+// link at each step. Code wins ties so * inside `code` isn't parsed. Each token
+// becomes an element with textContent (or recursed for nestable styles); plain
+// runs become text nodes — so nothing is ever interpreted as HTML.
+function renderInline(text, parent) {
+  const patterns = [
+    { re: /`([^`]+)`/, tag: "code" },
+    { re: /\*\*([^*]+)\*\*/, tag: "strong", nest: true },
+    { re: /__([^_]+)__/, tag: "strong", nest: true },
+    { re: /\*([^*]+)\*/, tag: "em", nest: true },
+    { re: /_([^_]+)_/, tag: "em", nest: true },
+    { re: /\[([^\]]+)\]\(([^)]+)\)/, tag: "a", link: true },
+  ];
+  let rest = text;
+  let guard = 0;
+  while (rest && guard++ < 5000) {
+    let best = null;
+    for (const p of patterns) {
+      const m = p.re.exec(rest);
+      if (m && (!best || m.index < best.m.index)) best = { p, m };
+    }
+    if (!best) { parent.appendChild(document.createTextNode(rest)); break; }
+    const { p, m } = best;
+    if (m.index > 0) parent.appendChild(document.createTextNode(rest.slice(0, m.index)));
+    if (p.link) {
+      const a = document.createElement("a");
+      const url = (m[2] || "").trim();
+      // Only allow safe schemes; an unsafe href is dropped (label still shows).
+      if (/^(https?:|mailto:)/i.test(url)) {
+        a.href = url;
+        a.target = "_blank";
+        a.rel = "noopener noreferrer";
+      }
+      a.textContent = m[1];
+      parent.appendChild(a);
+    } else {
+      const el = document.createElement(p.tag);
+      if (p.nest) renderInline(m[1], el); // bold/italic can contain each other
+      else el.textContent = m[1];          // code is literal
+      parent.appendChild(el);
+    }
+    rest = rest.slice(m.index + m[0].length);
+  }
+}
+
 function makeResizeHandle() {
   const handle = document.createElement("div");
   handle.className = "resize-handle";
@@ -89,7 +234,19 @@ function createNoteElement(note, onDelete, onPromptRun, onContentChange, onReply
     body.className = "note-body";
     const content = document.createElement("div");
     content.className = "response-content" + (note.loading ? " loading" : "");
-    content.textContent = note.loading ? "Thinking…" : (note.content || "");
+    // Loading + error states stay plain text (no Markdown surprises); a real
+    // answer renders as DOM-built Markdown. `.md` switches the container to
+    // normal whitespace so block elements lay out correctly.
+    if (note.loading) {
+      content.textContent = "Thinking…";
+    } else if (!note.content) {
+      content.textContent = "";
+    } else if (note.content.startsWith("Error:")) {
+      content.textContent = note.content;
+    } else {
+      content.classList.add("md");
+      content.appendChild(renderMarkdown(note.content));
+    }
     body.appendChild(content);
     inner.appendChild(body);
 
