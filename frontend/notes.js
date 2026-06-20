@@ -76,6 +76,7 @@ function createNoteElement(note, onDelete, onPromptRun, onContentChange, onReply
     const delBtn = document.createElement("button");
     delBtn.className = "btn-delete";
     delBtn.title = "Delete this branch";
+    delBtn.setAttribute("aria-label", "Delete this branch");
     delBtn.textContent = "×";
     delBtn.addEventListener("click", (e) => {
       e.stopPropagation();
@@ -141,6 +142,7 @@ function createNoteElement(note, onDelete, onPromptRun, onContentChange, onReply
   const delBtn = document.createElement("button");
   delBtn.className = "btn-delete";
   delBtn.title = "Delete note";
+  delBtn.setAttribute("aria-label", "Delete note");
   delBtn.textContent = "×";
   delBtn.addEventListener("click", (e) => {
     e.stopPropagation();

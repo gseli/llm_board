@@ -7,26 +7,54 @@
   <link rel="stylesheet" href="style.css" />
 </head>
 <body>
-  <div id="toolbar">
+  <div id="toolbar" role="toolbar" aria-label="Board tools">
     <span id="board-title">the <em>note</em> board</span>
-    <select id="board-select" title="Switch board"></select>
+    <select id="board-select" title="Switch board" aria-label="Switch board"></select>
     <button id="btn-new-board" title="New board">+ board</button>
-    <button id="btn-rename-board" title="Rename this board">✎</button>
-    <button id="btn-delete-board" title="Delete this board" hidden>🗑</button>
+    <button id="btn-rename-board" title="Rename this board" aria-label="Rename this board">✎</button>
+    <button id="btn-delete-board" title="Delete this board" aria-label="Delete this board" hidden>🗑</button>
     <button id="btn-new-text">+ text note</button>
     <button id="btn-new-prompt">+ prompt note</button>
-    <button id="btn-focus">focus</button>
-    <button id="btn-tidy" title="Gently arrange the trees">✦ tidy</button>
+    <button id="btn-focus" aria-pressed="false">focus</button>
+    <button id="btn-tidy" title="Gently arrange the trees" aria-label="Tidy: gently arrange the trees">✦ tidy</button>
     <span id="save-status"></span>
     <span id="undo-slot"></span>
   </div>
-  <div id="canvas-container">
+  <div id="canvas-container" role="application" aria-label="Thought-tree canvas">
     <div id="canvas"></div>
-    <div id="zoom-ui">
-      <button id="zoom-in" title="Zoom in (+)">+</button>
-      <button id="zoom-out" title="Zoom out (−)">−</button>
-      <button id="zoom-fit" class="fit" title="Fit all (0)">fit</button>
-      <div id="zoom-level">100%</div>
+    <!-- Empty-board welcome: teaches the core loop. Shown only when the board has
+         no notes; hidden the moment the first note appears. View-only, never saved. -->
+    <div id="empty-state" hidden>
+      <div id="empty-card">
+        <p class="empty-kicker">an empty page</p>
+        <h2 class="empty-head">Start with a word you don't&nbsp;understand.</h2>
+        <p class="empty-lead">
+          Drop a <strong>prompt note</strong>, type the term, and run it — the
+          answer appears to the right. Every answer sprouts little
+          <em>explore</em> pills; click one to follow the thread deeper. That's
+          the rabbit&#8209;hole.
+        </p>
+        <button id="empty-add-prompt" type="button">+ prompt note</button>
+        <p class="empty-hint">
+          or drag the canvas to pan · scroll to move · <kbd>0</kbd> to fit
+        </p>
+      </div>
+    </div>
+    <!-- First-run coach-mark: shown once, the first time an answer (and its
+         explore pills) appears. Teaches the fork-the-thread move, then never
+         again (localStorage flag). View-only, never saved to a board. -->
+    <div id="coach-orbit" hidden role="status">
+      <p class="coach-text">
+        <strong>↳ These pills fork the thread.</strong>
+        Click one to dig into the answer — that's how you go down the rabbit&#8209;hole.
+      </p>
+      <button id="coach-dismiss" type="button" aria-label="Got it, dismiss this tip">got it</button>
+    </div>
+    <div id="zoom-ui" role="group" aria-label="Zoom controls">
+      <button id="zoom-in" title="Zoom in (+)" aria-label="Zoom in">+</button>
+      <button id="zoom-out" title="Zoom out (−)" aria-label="Zoom out">−</button>
+      <button id="zoom-fit" class="fit" title="Fit all (0)" aria-label="Fit all content to view">fit</button>
+      <div id="zoom-level" aria-live="polite" aria-label="Zoom level">100%</div>
     </div>
   </div>
   <div id="modal-overlay" hidden>
