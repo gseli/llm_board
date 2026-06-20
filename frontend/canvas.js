@@ -116,9 +116,11 @@ async function loadBoard() {
   const legacy = data.layout !== "tree" && notes.length > 0;
   layout = "tree";
   renderAll();
-  // A pre-tree (vertical) board has stale x/y — tidy once to lay it out
-  // horizontally and store the positions, then it's stable like any tree board.
-  if (legacy) tidyTree();
+  // A pre-tree (vertical) board has stale x/y — run the one-time repack to lay it
+  // out horizontally and store the positions, then it's stable like any tree
+  // board. (Manual ✦ Tidy is the flowing-line layout; migration wants the full
+  // clean repack so a vertical chain becomes a proper horizontal tree.)
+  if (legacy) migrateLayout();
 }
 
 // POST the current notes to a given board. Extracted so both the debounced
@@ -694,6 +696,18 @@ const ROW_GAP = 28;    // vertical gap between sibling subtrees
 const TREE_GAP = 70;   // vertical gap between top-level trees
 const FALLBACK_H = 150; // assumed card height before it has been measured
 
+// "Flowing line" tidy params (the manual ✦ Tidy). A branch is laid out as a
+// gently bending train-of-thought rather than a rigid column grid. The meander
+// is a pure function of DEPTH, so all nodes at one depth shift identically —
+// which keeps sibling/cousin gaps intact (overlap-safe) while a chain reads as a
+// soft sine wave. The fan nudges forked children a touch further right the more
+// they sit off their parent's centre-line, so a fork peels open instead of
+// stacking. Both are deliberately "subtle" (tunable here).
+const FLOW_AMP = 14;        // px — meander amplitude along a chain
+const FLOW_PHASE = 1.1;     // radians of meander per depth (wave frequency)
+const FLOW_FAN = 22;        // px — max extra rightward nudge for an off-axis child
+const FLOW_FAN_RATIO = 0.14;// how strongly vertical offset converts to fan nudge
+
 // Orbit (floating explore-move pills shown right of each response).
 const ORBIT_GAP = 90;  // gap between a response's right edge and its orbit pills
                        // (roomy, so the connecting tethers are clearly visible)
@@ -810,6 +824,8 @@ function assignLayout(note, x, top, pos, heights, seen = new Set()) {
 }
 
 // Lay out the whole forest given measured card heights, writing pos[id]={x,y}.
+// Full repack: roots stacked top-to-bottom from y=0. Used ONLY for the one-time
+// legacy (vertical→horizontal) migration now; the manual tidy uses flowForest.
 function computeForest(heights) {
   const pos = {};
   let top = 0;
@@ -817,6 +833,121 @@ function computeForest(heights) {
     top += assignLayout(root, 0, top, pos, heights) + TREE_GAP;
   });
   return pos;
+}
+
+// ── Flowing-line layout (the manual ✦ Tidy) ───────────────────
+// Like assignLayout (same band allocation → no overlap, depth = order) but with
+// the "train line" flow: a per-depth meander curves the line, and a fan nudges
+// forked children rightward as they peel off their parent's centre-line. Writes
+// pos[id] = { x: left, y: center }. `parentCY` is the parent's centre (null at
+// the root) and `depth` drives the meander phase.
+function assignFlow(note, x, top, pos, heights, depth, parentCY, seen = new Set()) {
+  if (seen.has(note.id)) return 0;
+  seen.add(note.id);
+  const band = subtreeHeight(note, heights);
+  const baseCY = top + band / 2;                 // un-meandered centre (drives child bands)
+  const cy = baseCY + Math.sin(depth * FLOW_PHASE) * FLOW_AMP; // meander: same for every node at this depth
+  const fan = parentCY == null ? 0 : Math.min(FLOW_FAN, Math.abs(cy - parentCY) * FLOW_FAN_RATIO);
+  pos[note.id] = { x: x + fan, y: cy };
+  const kids = displayChildrenOf(note.id);
+  const childTotal = kids.reduce((s, k) => s + subtreeHeight(k.node, heights), 0)
+    + ROW_GAP * Math.max(0, kids.length - 1);
+  let cursor = baseCY - childTotal / 2;          // centre children on the un-meandered base
+  kids.forEach((k) => {
+    const kBand = subtreeHeight(k.node, heights);
+    assignFlow(k.node, x + COL_W, cursor, pos, heights, depth + 1, cy, seen);
+    cursor += kBand + ROW_GAP;
+  });
+  return band;
+}
+
+// Bounding box of one branch (its node ids), including the orbit gutter of any
+// response showing pills, so branches don't get pushed into each other's pills.
+function branchBox(ids, pos, sizes) {
+  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+  ids.forEach((id) => {
+    const p = pos[id];
+    if (!p) return;
+    const s = sizes[id] || { w: 290, h: FALLBACK_H };
+    const note = notes.find((n) => n.id === id);
+    const gutter = note && orbitMovesFor(note).length ? ORBIT_GAP + ORBIT_W : 0;
+    const h = note ? Math.max(s.h, orbitHeightFor(note)) : s.h;
+    minX = Math.min(minX, p.x);
+    maxX = Math.max(maxX, p.x + s.w + gutter);
+    minY = Math.min(minY, p.y - h / 2);
+    maxY = Math.max(maxY, p.y + h / 2);
+  });
+  return { minX, minY, maxX, maxY };
+}
+
+// Lay out every branch as a flowing line in a local frame, ANCHOR each branch so
+// its root keeps its current spot, then push whole branches apart as rigid units
+// until none overlap. Returns pos[id] = { x: left, y: center }.
+function flowForest(heights, sizes) {
+  const pos = {};
+  const branches = forestRoots().map((root) => {
+    const local = {};
+    const band = subtreeHeight(root, heights);
+    assignFlow(root, 0, -band / 2, local, heights, 0, null); // root → local centre (0,0)
+    // Anchor: translate so the root's stored top-left stays put.
+    const rootH = heights[root.id] || FALLBACK_H;
+    const dx = (root.x || 0) - local[root.id].x;
+    const dy = ((root.y || 0) + rootH / 2) - local[root.id].y;
+    const ids = Object.keys(local);
+    ids.forEach((id) => { pos[id] = { x: local[id].x + dx, y: local[id].y + dy }; });
+    return { ids };
+  });
+
+  // De-overlap branches as units: minimal nudges, whole branch moves together,
+  // so each stays one cohesive cluster near where its root already was.
+  const PAD = TREE_GAP;
+  for (let pass = 0; pass < 60; pass++) {
+    let moved = false;
+    for (let i = 0; i < branches.length; i++) {
+      for (let j = i + 1; j < branches.length; j++) {
+        const A = branchBox(branches[i].ids, pos, sizes);
+        const B = branchBox(branches[j].ids, pos, sizes);
+        const ox = Math.min(A.maxX, B.maxX) - Math.max(A.minX, B.minX) + PAD;
+        const oy = Math.min(A.maxY, B.maxY) - Math.max(A.minY, B.minY) + PAD;
+        if (ox > 0 && oy > 0) {
+          moved = true;
+          const translate = (br, ddx, ddy) => br.ids.forEach((id) => { pos[id].x += ddx; pos[id].y += ddy; });
+          if (oy <= ox) { // separate vertically (least penetration)
+            const push = oy / 2;
+            const aUp = (A.minY + A.maxY) <= (B.minY + B.maxY);
+            translate(branches[i], 0, aUp ? -push : push);
+            translate(branches[j], 0, aUp ? push : -push);
+          } else {
+            const push = ox / 2;
+            const aLeft = (A.minX + A.maxX) <= (B.minX + B.maxX);
+            translate(branches[i], aLeft ? -push : push, 0);
+            translate(branches[j], aLeft ? push : -push, 0);
+          }
+        }
+      }
+    }
+    if (!moved) break;
+  }
+  return pos;
+}
+
+// One-time legacy migration: a pre-tree (vertical) board has stale coords. Run
+// the full repack (computeForest) ONCE to convert it to the horizontal model,
+// then it's stable. Instant — it's a conversion, not a user gesture. (The manual
+// ✦ Tidy is the flowing-line layout, anchored in place.)
+function migrateLayout() {
+  const heights = {};
+  document.querySelectorAll("#canvas > .note").forEach((el) => { heights[el.dataset.id] = el.offsetHeight; });
+  const pos = computeForest(heights);
+  notes.forEach((note) => {
+    const p = pos[note.id];
+    if (!p) return;
+    const h = heights[note.id] || FALLBACK_H;
+    note.x = p.x;
+    note.y = p.y - h / 2;
+  });
+  renderAll();
+  scheduleSave();
 }
 
 // renderAll PAINTS the board from each note's STORED position (note.x/note.y) —
@@ -946,19 +1077,22 @@ function placeNewNode(note) {
   }
 }
 
-// The user-invoked tidy: run the tidy-tree layout once and GLIDE the existing
-// cards into place — the only time the canvas moves on its own. It animates the
-// live DOM (rather than re-rendering) so cards transition from their current
-// spots; wires are redrawn each frame during the glide. Pills snap back to their
-// default orbit. Soft, slow easing ("leaves settling"), never an abrupt snap.
+// The user-invoked tidy: lay every branch out as a flowing line, anchored to
+// where its root already sits, and GLIDE the cards into place — the only time
+// the canvas moves on its own. It animates the live DOM (rather than
+// re-rendering) so cards transition from their current spots; wires are redrawn
+// each frame during the glide. Pills snap back to their default orbit. Soft,
+// slow easing ("leaves settling"), never an abrupt snap.
 function tidyTree() {
   const heights = {};
+  const sizes = {};
   const measured = {};
   document.querySelectorAll("#canvas > .note").forEach((el) => {
     heights[el.dataset.id] = el.offsetHeight;
+    sizes[el.dataset.id] = { w: el.offsetWidth, h: el.offsetHeight };
     measured[el.dataset.id] = el;
   });
-  const pos = computeForest(heights); // {id:{x, y-center}}
+  const pos = flowForest(heights, sizes); // {id:{x:left, y:center}}, anchored + de-overlapped
 
   pillPos = {}; // pills return to their orbit
 
