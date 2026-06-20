@@ -1,4 +1,6 @@
-const BOARD_NAME = "default";
+// The active board name. View-only state: persisted in localStorage (so a reload
+// returns to the last forest), never in board JSON. Switching boards changes this.
+let currentBoard = localStorage.getItem("llmboard.lastBoard") || "default";
 
 let notes = [];
 let saveTimer = null;
@@ -81,8 +83,22 @@ function fitAll() {
 let layout = "tree";
 
 async function loadBoard() {
-  const res = await fetch(`/board/${BOARD_NAME}`);
-  const data = await res.json();
+  // Guard the whole load: an unreachable backend or a bad response otherwise
+  // throws an uncaught rejection here, leaving a blank canvas with no feedback
+  // (and, on boot, skipping the fitAll/refreshBoardList that follow this call).
+  let data;
+  try {
+    const res = await fetch(`/board/${encodeURIComponent(currentBoard)}`);
+    if (!res.ok) throw new Error(`server returned ${res.status}`);
+    data = await res.json();
+  } catch (err) {
+    notes = [];
+    pillPos = {};
+    layout = "tree";
+    renderAll();
+    notify("Couldn't load board", `${err.message}. Is the backend running?`);
+    return;
+  }
   notes = data.notes || [];
   pillPos = data.pill_pos || {};
   const legacy = data.layout !== "tree" && notes.length > 0;
@@ -93,18 +109,260 @@ async function loadBoard() {
   if (legacy) tidyTree();
 }
 
+// POST the current notes to a given board. Extracted so both the debounced
+// scheduleSave and the flush-before-switch path can reuse it.
+async function saveBoard(name) {
+  await fetch(`/board/${name}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ notes, layout, pill_pos: pillPos }),
+  });
+}
+
 function scheduleSave() {
   clearTimeout(saveTimer);
   setSaveStatus("saving");
   saveTimer = setTimeout(async () => {
-    await fetch(`/board/${BOARD_NAME}`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ notes, layout, pill_pos: pillPos }),
-    });
+    saveTimer = null;
+    await saveBoard(currentBoard);
     setSaveStatus("saved");
     setTimeout(() => setSaveStatus(""), 1500);
   }, 500);
+}
+
+// ── Themed modal (replaces native window.prompt / window.alert / confirm) ───
+// askName resolves to the trimmed string (Enter / ok) or null (Esc / cancel).
+// notify shows an info dialog with a single ok; resolves when dismissed.
+// confirm shows ok + cancel; resolves true (ok) / false (cancel / Esc / backdrop).
+
+const modalEls = {
+  overlay: document.getElementById("modal-overlay"),
+  title: document.getElementById("modal-title"),
+  message: document.getElementById("modal-message"),
+  input: document.getElementById("modal-input"),
+  ok: document.getElementById("modal-ok"),
+  cancel: document.getElementById("modal-cancel"),
+};
+
+function openModal({ title, message = "", initial, withInput, withCancel, okLabel }) {
+  // withCancel defaults to withInput (a prompt always offers cancel); notify
+  // passes neither (ok-only); confirm passes withCancel without withInput.
+  const showCancel = withCancel ?? withInput;
+  return new Promise((resolve) => {
+    modalEls.title.textContent = title;
+    modalEls.message.textContent = message;
+    modalEls.ok.textContent = okLabel ?? "ok";
+    modalEls.input.hidden = !withInput;
+    modalEls.cancel.hidden = !showCancel;
+    if (withInput) {
+      modalEls.input.value = initial ?? "";
+    }
+    modalEls.overlay.hidden = false;
+    if (withInput) {
+      modalEls.input.focus();
+      modalEls.input.select();
+    } else {
+      modalEls.ok.focus();
+    }
+
+    function cleanup(result) {
+      modalEls.overlay.hidden = true;
+      modalEls.ok.removeEventListener("click", onOk);
+      modalEls.cancel.removeEventListener("click", onCancel);
+      modalEls.overlay.removeEventListener("mousedown", onBackdrop);
+      modalEls.input.removeEventListener("keydown", onKey);
+      document.removeEventListener("keydown", onEsc);
+      resolve(result);
+    }
+    const onOk = () => cleanup(withInput ? modalEls.input.value.trim() : true);
+    const onCancel = () => cleanup(null);
+    const onBackdrop = (e) => { if (e.target === modalEls.overlay) cleanup(null); };
+    const onKey = (e) => { if (e.key === "Enter") { e.preventDefault(); onOk(); } };
+    const onEsc = (e) => { if (e.key === "Escape") cleanup(null); };
+
+    modalEls.ok.addEventListener("click", onOk);
+    modalEls.cancel.addEventListener("click", onCancel);
+    modalEls.overlay.addEventListener("mousedown", onBackdrop);
+    modalEls.input.addEventListener("keydown", onKey);
+    document.addEventListener("keydown", onEsc);
+  });
+}
+
+const askName = (title, initial) => openModal({ title, initial, withInput: true });
+const notify = (title, message) => openModal({ title, message, withInput: false });
+const confirm = (title, message, okLabel = "delete") =>
+  openModal({ title, message, withInput: false, withCancel: true, okLabel }).then((r) => r === true);
+
+// ── Multi-board switcher ──────────────────────────────────────
+
+const boardSelect = document.getElementById("board-select");
+const btnDeleteBoard = document.getElementById("btn-delete-board");
+
+// Fetch the board list and rebuild the <select>, keeping currentBoard selected.
+async function refreshBoardList() {
+  // Degrade gracefully if the list can't be fetched: fall back to showing just
+  // the current board rather than throwing (loadBoard already surfaces a
+  // backend-down modal on boot; no need for a second one here).
+  let boards = [];
+  try {
+    const res = await fetch("/boards");
+    if (res.ok) ({ boards } = await res.json());
+  } catch { /* keep the empty list; fallback below shows currentBoard */ }
+  // currentBoard may be brand-new (not yet on disk) — include it so it shows.
+  const names = boards.includes(currentBoard) ? boards : [...boards, currentBoard];
+  // Build options via the DOM, not an innerHTML template — board names are
+  // free user text (the backend only rejects path separators), so interpolating
+  // them into HTML would be a stored-XSS hole. textContent escapes them.
+  boardSelect.replaceChildren(
+    ...names.map((n) => {
+      const opt = document.createElement("option");
+      opt.value = n;
+      opt.textContent = n;
+      return opt;
+    })
+  );
+  boardSelect.value = currentBoard;
+  // The default board is the always-present home — never deletable.
+  btnDeleteBoard.hidden = currentBoard === "default";
+}
+
+// Lowest free "New Board" / "New Board N" name given the existing names.
+function nextBoardName(existing) {
+  const base = "New Board";
+  if (!existing.includes(base)) return base;
+  let n = 2;
+  while (existing.includes(`${base} ${n}`)) n++;
+  return `${base} ${n}`;
+}
+
+// Switch to an existing board. Flushes any pending save to the OLD board first
+// (the debounced timer would otherwise drop the edit or save it to the new board),
+// resets board-scoped view-only state, then loads + frames the target board.
+async function switchBoard(name) {
+  if (name === currentBoard) return;
+  if (saveTimer) {
+    clearTimeout(saveTimer);
+    saveTimer = null;
+    await saveBoard(currentBoard);
+    setSaveStatus("");
+  }
+  // Reset view-only state — never persisted, scoped to the board you were on.
+  undoStack.length = 0;
+  showUndo();
+  focusMode = false;
+  activeGroupId = null;
+  document.getElementById("btn-focus").classList.remove("active");
+
+  currentBoard = name;
+  localStorage.setItem("llmboard.lastBoard", currentBoard);
+  await loadBoard();
+  fitAll();
+  await refreshBoardList();
+}
+
+// Create a fresh, empty board and switch to it. Prompts for a name, pre-filled
+// with the auto-name ("New Board" / "New Board N"); blank or cancel keeps the
+// auto-name. A name that's already taken falls back to the auto-name too.
+async function newBoard() {
+  const res = await fetch("/boards");
+  const { boards } = await res.json();
+  const auto = nextBoardName(boards);
+
+  const entered = await askName("Name your new board", auto);
+  if (entered === null) return;                 // cancelled → no board created
+  let name = entered;                           // askName returns trimmed
+  if (!name || boards.includes(name)) name = auto;
+
+  // Flush a pending save to the CURRENT board first — otherwise the debounced
+  // timer would fire after currentBoard changes and write to the new board.
+  if (saveTimer) {
+    clearTimeout(saveTimer);
+    saveTimer = null;
+    await saveBoard(currentBoard);
+  }
+  // Reset view-only state, same as switchBoard.
+  undoStack.length = 0;
+  showUndo();
+  focusMode = false;
+  activeGroupId = null;
+  document.getElementById("btn-focus").classList.remove("active");
+
+  notes = [];
+  pillPos = {};
+  currentBoard = name;
+  localStorage.setItem("llmboard.lastBoard", currentBoard);
+  renderAll();
+  fitAll();
+  scheduleSave();           // persist the empty board to disk
+  await refreshBoardList();
+}
+
+// Rename the currently-selected board. Prompts for a new name, moves the board
+// file on disk (POST /board/:name/rename), then points currentBoard at it.
+async function renameBoard() {
+  const entered = await askName("Rename this board", currentBoard);
+  if (entered === null) return;
+  const name = entered;                          // askName returns trimmed
+  if (!name || name === currentBoard) return;
+
+  // Flush any pending edit to the old name before the file moves underneath it.
+  if (saveTimer) {
+    clearTimeout(saveTimer);
+    saveTimer = null;
+    await saveBoard(currentBoard);
+  }
+  const res = await fetch(`/board/${encodeURIComponent(currentBoard)}/rename`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ new_name: name }),
+  });
+  if (!res.ok) {
+    const { detail } = await res.json().catch(() => ({}));
+    await notify("Couldn't rename", String(detail || res.status));
+    return;
+  }
+  currentBoard = name;
+  localStorage.setItem("llmboard.lastBoard", currentBoard);
+  await refreshBoardList();
+}
+
+// Delete the currently-selected board (DELETE /board/:name) after a confirm,
+// then fall back to the default board. The default board is protected and
+// cannot be deleted (the control is hidden when it's active; the server also
+// rejects it).
+async function deleteBoard() {
+  if (currentBoard === "default") return;
+  const target = currentBoard;
+  const ok = await confirm(
+    "Delete this board?",
+    `“${target}” and everything on it will be permanently removed. This can’t be undone.`
+  );
+  if (!ok) return;
+
+  // Drop any pending save to the board we're deleting — don't resurrect it.
+  if (saveTimer) {
+    clearTimeout(saveTimer);
+    saveTimer = null;
+    setSaveStatus("");
+  }
+  const res = await fetch(`/board/${encodeURIComponent(target)}`, { method: "DELETE" });
+  if (!res.ok) {
+    const { detail } = await res.json().catch(() => ({}));
+    await notify("Couldn't delete", String(detail || res.status));
+    return;
+  }
+  // Reset board-scoped view state and fall back to default.
+  undoStack.length = 0;
+  showUndo();
+  focusMode = false;
+  activeGroupId = null;
+  document.getElementById("btn-focus").classList.remove("active");
+
+  currentBoard = "default";
+  localStorage.setItem("llmboard.lastBoard", currentBoard);
+  await loadBoard();
+  fitAll();
+  await refreshBoardList();
 }
 
 function setSaveStatus(state) {
@@ -1168,7 +1426,17 @@ window.addEventListener("keydown", (e) => {
   }
 });
 
+// ── Board switcher events ─────────────────────────────────────
+
+boardSelect.addEventListener("change", (e) => switchBoard(e.target.value));
+document.getElementById("btn-new-board").addEventListener("click", () => newBoard());
+document.getElementById("btn-rename-board").addEventListener("click", () => renameBoard());
+document.getElementById("btn-delete-board").addEventListener("click", () => deleteBoard());
+
 // ── Boot ──────────────────────────────────────────────────────
 
 applyCamera();
-loadBoard().then(() => fitAll());
+loadBoard().then(() => {
+  fitAll();
+  refreshBoardList();
+});

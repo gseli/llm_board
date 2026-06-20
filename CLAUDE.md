@@ -4,7 +4,7 @@ A spatial **discovery** tool: a freeform canvas where you post notes and prompt 
 
 The soul is **discovery / thinking / figuring things out — not memorization.** Design choices favour *following your curiosity deeper* (the rabbit-hole) over storing/reviewing what you already know. (Detailed positioning + the evidence behind it lives in `docs/ROADMAP.md`, which is gitignored/local.)
 
-> ⚠️ **Spatial model is mid-migration (EPIC #21).** The code on `main` today is the **vertical-chain** model documented below (`prompt → response → follow-up`, stacked downward, fixed scroll-canvas). It is being **replaced one-way** by a **horizontal, auto-laid-out, zoomable thought-tree forest** — see [The horizontal thought-tree (the new model — in progress)](#the-horizontal-thought-tree-the-new-model--in-progress) at the bottom. When working on tree slices (#22–#26), that section is the target; the sections in between describe what currently exists and what each slice supersedes. Don't assume the tree exists in the code until its slice has merged.
+The interface is a **horizontal, zoomable thought-tree forest**: a prompt's answer appears to its right, each answer carries floating **orbit moves** that fork the thread rightward, and tangents **break out** into their own trees. EPIC #21 (PRs #27–#32) replaced the old vertical-chain / scroll-canvas model; the section [The horizontal thought-tree](#the-horizontal-thought-tree) below is the authoritative description of how it works.
 
 ---
 
@@ -25,6 +25,16 @@ uvicorn main:app --reload
 
 ---
 
+## Automation & tooling
+
+Project skills + hooks live in `.claude/` (`AUTOMATION_SETUP.md` is the original proposal; the running logs are `docs/director_improvements.md` and `docs/automation_opportunities.md`).
+
+- **`verify-board` skill** — drives the app headlessly to verify a frontend change: starts the backend on `:8765`, loads the `_verify` fixture with `/prompt` and `POST /board` intercepted (no live LLM call, fixture never mutated), runs an assertions snippet against `frontend/test/verify-harness.mjs`, prints JSON, tears down. **`_verify.json` carries `"layout": "tree"`** so loading it triggers no on-load migration save — without that stamp, opening the fixture on a *non-intercepting* backend (e.g. the user's live `:8000`, via the board switcher) runs `tidyTree()` → `scheduleSave()` → a real `POST` that rewrites the fixture on disk. Keep the stamp; don't remove it. **The harness runs only from `/home/elizabet`** (where `playwright` resolves). Start the server with `run_in_background: true` and `--app-dir <backend>` — a `(uvicorn … &)` subshell gets reaped between Bash calls in this sandbox. Tear down in a **standalone** call: `pgrep -f "uvicorn.*8765" | xargs -r kill -9`. To *confirm* it's down, do **not** re-run a bare `pgrep -f "...8765"` — that pattern matches the confirming command's own shell line and always reports a false "STILL RUNNING". Confirm with `ps -eo pid,cmd | grep uvicorn | grep 8765 | grep -v grep` (or trust the background-task exit notification). Never bare `pkill uvicorn` — it would kill the user's `:8000 --reload` dev server; never chain after `kill`, exit 144 short-circuits `&&`.
+- **`wrap-up` skill** — end-of-session retrospective: appends to `docs/director_improvements.md`, appends to `docs/automation_opportunities.md`, and folds durable learnings into this file.
+- **Co-author hook** — a `PreToolUse` Bash hook in `.claude/settings.json` blocks any commit carrying a `Co-Authored-By: Claude` trailer (repo convention; commits omit it). It parses the command from **stdin JSON** (`jq -r '.tool_input.command'`) — `$CLAUDE_TOOL_INPUT` is empty in Claude Code 2.1.x.
+
+---
+
 ## Project structure
 
 ```
@@ -36,7 +46,7 @@ LLM_Board/
 │   └── config.py     # Reads config.yaml
 ├── frontend/
 │   ├── index.html    # Shell — toolbar + canvas container
-│   ├── canvas.js     # State, rendering, drag, resize, chain logic, undo, focus mode, explore
+│   ├── canvas.js     # State, camera/zoom, tree render + tidy layout, drag, orbit moves, detach, undo, focus
 │   ├── notes.js      # Note card DOM construction; TEMPLATES (root) + EXPLORE_MOVES (follow-up)
 │   └── style.css     # Paper/parchment visual theme
 ├── boards/           # Saved board JSON files (auto-created)
@@ -52,8 +62,8 @@ LLM_Board/
 | Type | Description |
 |---|---|
 | `text` | Plain freeform note. No LLM interaction. Draggable, resizable. |
-| `prompt` | Textarea + Run button. A **root** prompt shows the Bloom's `TEMPLATES` selector; a **follow-up** prompt (created by an explore move) is generated, not hand-authored. Spawns a response note below. |
-| `response` | LLM output, read-only. Footer carries one-click **explore moves** + a free-text "↩ ask your own" to continue the thread. |
+| `prompt` | Textarea + Run button + Bloom's `TEMPLATES` selector. **Only a ROOT prompt renders as a card** — its answer appears to the right. A follow-up prompt (created by an explore move) is **hidden**: it carries the move + context in the data, but the orbit move pill is the visible "question", so the answer connects straight through it. |
+| `response` | LLM output, read-only, with a delete `×`. Its explore moves are **floating orbit pills to the right** (not a footer); clicking one forks a child branch. Shows a dim **token-count footer** (`N cards · ~M tokens`) only when its `conversation` array has more than one exchange (`length > 2`) — `~4 chars/token`, built in `notes.js`, styled `.token-count`. |
 
 ### Data model
 
@@ -68,30 +78,29 @@ Each note in `boards/*.json`:
   "width": 290,
   "height": null,
   "content": "...",
-  "prompt_template": "explain_term",   // root prompt → a TEMPLATES id; follow-up → an EXPLORE_MOVES id
+  "prompt_template": "explain_term",   // root prompt → a TEMPLATES id; forked follow-up → an EXPLORE_MOVES id; null for "ask your own"
   "parent_id": "uuid or null",
   "thread_id": "uuid or null",
+  "is_root": true,                     // optional — a detached / broken-out forest root
+  "origin_id": "uuid",                 // optional — break-out only: source response (drives the dashed origin link)
   "conversation_context": [{"role": "user|assistant", "content": "..."}],
   "conversation": [{"role": "user|assistant", "content": "..."}]
 }
 ```
 
-### Conversation chains (current vertical model — being replaced by the tree, EPIC #21)
+`x`/`y` are the note's **stored** position — set once when created, on drag, or by Tidy; the renderer paints them, it does not recompute layout. The board JSON also carries top-level `"layout": "tree"` (migration stamp) and `"pill_pos"` (`{"responseId:moveId": {x, y}}` for dragged orbit pills). All of these are freeform keys the backend round-trips untouched (`layout`/`pill_pos` are declared optional on `BoardData` so Pydantic doesn't drop the board-level fields).
 
-A chain is: `prompt → response → follow-up prompt → response → ...`
+### Conversation threads (the tree)
 
-- All notes in a chain share a `thread_id`
-- Each node links to the one above it via `parent_id`
-- `renderChain()` in `canvas.js` walks `parent_id` links downward to build the chain group div — **assumes a single child per node** (`notes.find(n => n.parent_id === current.id)`). This single-child walk is exactly what slice #23 replaces with a multi-child tidy-tree layout.
-- The entire chain is draggable from the root prompt header
-- Full conversation history is passed to the LLM on every follow-up (no windowing)
+A thread is a tree: `root prompt → response → [orbit move] → response → [orbit move] → response → …`, growing rightward. A response can fork into **many** children.
+
+- Every node links to its parent via `parent_id`; nodes in a thread share a `thread_id`. A forest **root** is any note with `parent_id == null` (a typed root prompt, a standalone text note, or a detached/broken-out node).
+- **Hidden follow-up prompts:** a fork creates `response → hidden prompt (carries move_id + context) → response`. The hidden prompt renders no card; `displayChildrenOf()` treats it as a pass-through so the source response connects directly to the forked response, with the wire routed through the orbit pill.
+- Full conversation history is passed to the LLM on every follow-up (no windowing). `buildHistory()` walks `parent_id` upward — unaffected by multi-child forking.
 
 ### Rendering
 
-`renderAll()` in `canvas.js` clears and redraws everything:
-- `text` notes → rendered standalone via `makeDraggable()`
-- `prompt` notes that are chain roots → rendered via `renderChain()`
-- `response` notes → **never rendered standalone**, always part of their chain group
+`renderAll()` in `canvas.js` clears and **paints from stored positions** — it does not run the layout. For each visible note it places the card at `note.x/note.y`, then builds the orbit pills and draws the SVG wires. Hidden follow-up prompts are skipped. Positions only change via `placeNewNode()` (once, at creation), a drag, or `tidyTree()` (the manual ✦ Tidy button). This "paint, don't recompute" rule is what keeps the canvas calm — moving one node never reflows the rest.
 
 ### LLM calls
 
@@ -110,20 +119,26 @@ The frontend always sends `messages`. The backend wraps a bare `prompt` into a s
 
 ## Interaction features
 
-### Explore moves (the headline — "deepen a thread")
-Each **response** card's footer shows a row of one-click **explore moves** that spawn the next answer in the thread in a single step (no separate compose). Defined in `EXPLORE_MOVES` in `notes.js` (`{id, label, needsInput, build(input)}`), grounded in the Graesser question taxonomy / Aristotle's *topoi*:
+### Explore moves (the headline — "fork a thread")
+Each **response** has a column of floating **orbit pills** to its right (built in `canvas.js`, not in the card). Clicking one **forks a child branch** rightward in one step. Defined in `EXPLORE_MOVES` in `notes.js` (`{id, label, needsInput, build(input)}`), grounded in the Graesser question taxonomy / Aristotle's *topoi*:
 
 - `more` *Tell me more* · `why` *Why?* · `example` *Give an example* — one click, no input.
-- `relate` *Relate / compare…* · `term` *Explain a term…* — `needsInput: true`; clicking reveals a tiny inline `<input>` (Enter submits, Esc cancels) for a second term.
-- Plus **↩ ask your own** — the existing free-text follow-up (`replyToResponse`), kept as an escape hatch so moves scaffold without caging the user's own questions.
+- `relate` *Relate / compare…* · `term` *Explain a term…* — `needsInput: true`; clicking reveals a tiny inline `<input>` (Enter submits, Esc cancels).
+- `↗ new tree` — break out a term into a fresh standalone tree (see Detach below).
+- `↩ ask your own` — free-text follow-up (`replyToResponse`), the escape hatch so moves scaffold without caging the user's own questions.
 
-`exploreFromResponse(responseId, move, inputText)` in `canvas.js` builds history, creates/replaces the follow-up prompt node (`prompt_template = move.id`), and runs it in one shot. `buildHistory` reconstructs explore-move turns (branch on `EXPLORE_MOVES` for follow-ups) so multi-step rabbit-holes keep accurate context. **To add a move:** add an entry to `EXPLORE_MOVES`; no other changes needed.
+`exploreFromResponse(responseId, move, inputText)` creates a follow-up prompt (`prompt_template = move.id`, hidden) and runs it — many forks per response allowed. A spent move dims but stays clickable (re-fork). Pills are freely draggable (pinned in `pillPos`). **To add a move:** add an entry to `EXPLORE_MOVES`; no other changes needed.
 
 ### Soft-delete + undo
 Deleting a note (and its whole chain subtree) is reversible via a 10-level LIFO `undoStack` in `canvas.js`, surfaced as an undo affordance in the toolbar. **No auto-expiry timeout** — a countdown to permanent loss is hostile to the ND audience; undo stays until the stack drains or the page reloads.
 
 ### Focus / dim-the-rest mode
-A toolbar `#btn-focus` toggle (`focusMode` / `activeGroupId` in `canvas.js`) dims every top-level group except the active one; click a group to make it active. **View-only / derived** — never persisted to board JSON, cleared on reload. Applied via `.dimmed` inside `renderAll`. Dimmed cards stay click-selectable (so click-to-focus works); their internal controls are JS-guarded.
+A toolbar `#btn-focus` toggle (`focusMode` / `activeGroupId` in `canvas.js`) dims every **tree** except the active one; click a tree to make it active. Grouping is by forest root (`rootOf(id)`). **View-only / derived** — never persisted to board JSON, cleared on reload. Applied via `.dimmed` inside `renderAll`. Dimmed cards stay click-selectable; their internal controls are JS-guarded.
+
+### Drag, tidy, detach
+- **Drag** any card by its header to reposition it freely — it stays where you drop it and **nothing else moves** (wires + the card's pills track live). Stored on `note.x/note.y`.
+- **✦ Tidy** (toolbar) is the only thing that re-arranges: `tidyTree()` runs the tidy-tree layout and **glides** cards into place with a slow soft ease, never a snap.
+- **Detach** (`detachToRoot`) promotes a node + subtree to a standalone root: **break-out** (from a term — text-selection bubble or `↗ new tree` move — keeps a dashed origin link) or **unlink** (long-press a card header ~400ms → lift → release; no link, context-before dropped).
 
 ---
 
@@ -185,49 +200,42 @@ To add a new provider:
 - **Discovery, not memorization** — favour features that help the user *follow curiosity deeper* (explore moves, the rabbit-hole, break-out tangents) over retention/review machinery. A spaced-repetition "understanding markers" loop was explicitly demoted to optional. Don't reintroduce it as a headline.
 - **View state stays out of board JSON** — `focusMode`/`activeGroupId` and the `undoStack` are in-memory only; never persist them. Only the `notes` array (and `layout`) is saved. (The camera's pan/zoom is also view-only — never persist it.)
 
-**OVERRULED by EPIC #21 (do NOT preserve these — they're being removed):**
-- ~~**Canvas is a large fixed div** — 4000×3000px with `overflow: scroll`.~~ → Replaced by a **transform-based camera** (`translate+scale` on a `#world` layer): a true zoomable infinite space (slice #22).
-- ~~**MMB to pan** via `scrollLeft`/`scrollTop`.~~ → Replaced by **drag-to-pan + zoom** (corner `+/−/FIT`, `Ctrl/⌘+wheel` toward cursor, keys `+/−/0`); zoom was issue #10, formerly wontfix, now core.
-- ~~**Vertical `renderChain`** (single child walked downward).~~ → Replaced by the **tidy-tree forest layout** (multi-child, siblings auto-stack, never overlap; slice #23). The `.note-connector` CSS gives way to SVG wires.
-- ~~**One follow-up per response** (`alreadyHasFollowUp` guard).~~ → Removed so a response can **fork freely** into many branches (slice #24).
+**Now in force from EPIC #21 (the current model — preserve these):**
+- **Transform camera** — `#canvas` is a zoomable world (`transform: translate+scale`), not a fixed scroll div. Pan via left-drag on empty space / middle-button / plain-wheel; zoom via corner `+/−/FIT`, `Ctrl/⌘+wheel` toward cursor, keys `+/−/0`. Camera pan/zoom is view-only, never persisted.
+- **Stored positions, painted not recomputed** — `renderAll` paints `note.x/note.y`; layout only runs in `placeNewNode` (create), drag, or `tidyTree`. Do not reintroduce per-render auto-layout (it caused the "everything jumps" motion).
+- **Free multi-child forking** — a response can have many children; there is no one-follow-up guard.
+- **SVG wires** (not `.note-connector` divs) connect nodes; hidden follow-up prompts route their wire through the orbit pill; break-out roots get a dashed teal `wire-origin`.
 
 ---
 
 ## Known limitations / planned future work
 
-- **Horizontal thought-tree (EPIC #21)** — the active major work; see the section below. Supersedes the vertical chain, the scroll-canvas, and zoom (#10).
-- **No multi-board UI** — the board name is hardcoded to `"default"` in `canvas.js`. The backend already supports named boards via `GET/POST /board/:name`; a board switcher in the toolbar just needs frontend wiring. (Reframed under the tree model as "a board is a *forest* of rabbit-holes"; the switcher is then "multiple forests.")
+- **No multi-board UI** — the board name is hardcoded to `"default"` in `canvas.js`. The backend already supports named boards via `GET/POST /board/:name`; a board switcher in the toolbar just needs frontend wiring. (Under the tree model: a board is a *forest* of rabbit-holes; the switcher is "multiple forests.")
+- **Keyboard-first interaction (#12)** — still open: visible focus rings + key shortcuts. Pairs naturally with the tree (arrow keys to walk it, number keys to fire orbit moves).
+- **Smarter new-node placement** — `placeNewNode` finds a spot once and never re-tidies, so dense forking can produce overlap until you press ✦ Tidy. A height-aware / clear-slot placement would reduce manual tidying.
 - **Explore moves are a fixed set** — LLM-generated *contextual* suggestions (Perplexity-style, derived from the answer) are a deferred next step. Root-prompt moves aren't unified with the follow-up set yet.
-- **Keyboard-first interaction** — visible focus rings + key shortcuts (`n`/`Enter`/`Esc`/`Del`) are the remaining ND-credibility-basics item (#12). Pairs naturally with the tree (arrow keys to walk it, number keys to fire orbit moves).
-- **Token counter** — planned: a small label on response cards showing e.g. `4 cards · ~3,200 tokens`.
 - **Chain summarization** — deprioritized: a user-triggered "Collapse into summary card" for very long branches.
 - **Understanding markers / spaced review** — *demoted to optional*. The tool's soul is discovery, not memorization; markers would be an opt-in retention add-on, not a headline.
 
 ---
 
-## The horizontal thought-tree (the new model — in progress)
+## The horizontal thought-tree
 
-**Status: planned/in-progress as EPIC #21 (slices #22–#26). NOT yet on `main`.** Prototyped end-to-end in `/mockups/` (`F-tidy-tree-autostack.html` = layout + camera; `G-breakout-multitree.html` = break-out + multi-tree) — those files are the reference implementation. The full sequenced plan lives in the plan file; this is the orientation for an agent picking up a slice.
+**Shipped as EPIC #21 (PRs #27–#32).** This is the live model. `/mockups/` (`F-tidy-tree-autostack.html` = layout + camera; `G-breakout-multitree.html` = break-out + multi-tree) remain as the design reference the implementation followed.
 
-### What it replaces the vertical chain with
-A prompt's answer appears **to the right** (timeline feel), and a thread grows into a **tree** that the app lays out automatically:
+### How it works
+A prompt's answer appears **to the right**; a thread grows rightward into a tree.
 
-- **Orbit moves.** Each response's explore moves are **floating nodes to its right** (not a footer row). One click **forks a child branch rightward** in one shot. The clicked move tucks to a dim "spent" waypoint but stays clickable (re-fork later); the others remain.
-- **Free forking.** A response can spawn *many* children — the thread is a tree, not a line. (The `alreadyHasFollowUp` guard is removed.)
-- **Tidy-tree auto-stack.** Each node reserves vertical space sized to its **whole subtree** (`countLeaves` → `assign` → `layoutForest`), so forking siblings push apart and **never overlap**. On each fork, all nodes **glide** to new positions (CSS `transition` on `left`/`top`). The move-orbit counts as pseudo-leaves so an un-forked response still reserves room for its buttons.
-- **Camera (zoomable infinite space).** A `#world` layer with `transform: translate+scale` replaces the fixed scroll-canvas. Manual zoom: corner `+/−/FIT`, `Ctrl/⌘+wheel` toward cursor, keys `+/−/0`; drag empty space to pan. **Calm camera** — no auto-follow; only a gentle nudge if a new node would land off-screen.
-- **SVG wires** connect parent→child (replacing `.note-connector`): `prompt→response` and `spent-move→child` strong; `response→orbit-move` thin; **dashed teal** for break-out origin links.
+- **Orbit moves** — floating pills to the right of each response (`buildOrbits`). One click **forks a child branch** (`exploreFromResponse`); a spent move dims but re-forks. Pills are freely draggable (`pillPos`) and sit a roomy `ORBIT_GAP` out so the tethers read.
+- **Free multi-child forking** — a response can spawn many children; no one-follow-up guard.
+- **Camera** — `#canvas` is a `transform: translate+scale` world: `zoomAt`/`fitAll`, pan via left-drag-empty / middle-button / plain-wheel, zoom via `Ctrl/⌘+wheel` + corner buttons + keys. View-only.
+- **Stable layout** — positions are **stored** on each note and only set at creation (`placeNewNode`, non-overlapping spot, nothing else moves), on drag, or by **✦ Tidy** (`tidyTree` → `computeForest` then a slow gliding ease). The tidy-tree maths (`countLeaves`/`assignLayout`/`computeForest`) run *only* inside `tidyTree`, never per-render.
+- **SVG wires** — `prompt→response` / forked-`response→response` (routed through the orbit pill) are strong; `response→orbit` tethers thin; break-out origins dashed teal. Redrawn live during a drag (`redrawWiresLive`).
 
 ### Detach — break-out & unlink (one operation, two entry points)
-`detachToRoot(nodeId, {originId})` promotes a node **+ its whole subtree** to a forest **root** (`is_root: true`, `parent_id: null`). Multiple trees coexist on one board, each in its own vertical band.
-- **Break-out** — chase a *term* out of an answer (text-selection bubble, an `↗ new tree` orbit move, or drag-a-move-to-empty-canvas). Creates a **fresh** root (no carried `conversation_context`) with `origin_id = sourceResponseId` → a **faint dashed origin link** back to the source.
-- **Unlink** — promote an *existing* node+subtree to a root: **fully standalone, no link**, with `conversation_context` cleared (context-before is dropped). Same op, just no `origin_id`.
+`detachToRoot(nodeId, {originId})` promotes a node **+ its whole subtree** to a forest **root** (`is_root: true`, `parent_id: null`).
+- **Break-out** — a *term* from an answer (text-selection bubble or `↗ new tree` orbit move) → a **fresh** root (no carried `conversation_context`) with `origin_id` → a dashed origin link. `breakOutTerm()`.
+- **Unlink** — long-press a card header ~400ms → lift → release. Promotes the existing node+subtree, **no link**, and clears `conversation_context` across the whole subtree (context-before dropped).
 
-### Data model (frontend-only additions — backend stays opaque)
-Reuses the flat `notes[]` + `parent_id`/`thread_id`. New freeform keys (round-trip safe — `notes` is an untyped list the backend never inspects):
-- `move_id` — which `EXPLORE_MOVES` id forked this follow-up (replaces the explore-move use of `prompt_template`).
-- `is_root: true` — marks a detached/break-out forest root.
-- `origin_id` — break-out only: source response id (drives the dashed link). Absent for unlink.
-- `layout: "tree"` on the board — stamps a board as migrated.
-
-**Migration:** old vertical boards are migrated **on load** (`loadBoard`). Vertical chains are already linear trees, so migration just stamps `layout: "tree"` and re-saves — the new renderer lays the existing chains out horizontally with no structural rewrite.
+### Hidden follow-up prompts & data keys
+A fork is stored as `response → hidden prompt → response`. The hidden prompt (a prompt with a `parent_id`) renders no card; `displayChildrenOf()` passes through it so the source response connects straight to the forked response. The forked prompt keeps `prompt_template = move.id` (NOT a separate `move_id` field — `buildHistory` reads `prompt_template`, so this avoided a migration). Board-level `layout: "tree"` (migration stamp) and `pill_pos` are declared optional on `BoardData`; legacy boards run `tidyTree()` once on load to convert stored vertical coords to the horizontal layout.

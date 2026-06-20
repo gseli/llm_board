@@ -7,7 +7,7 @@ from typing import Optional
 
 from config import load_config
 from llm import get_provider
-from storage import load_board, save_board
+from storage import load_board, save_board, list_boards, rename_board, delete_board
 
 app = FastAPI()
 
@@ -25,15 +25,54 @@ class BoardData(BaseModel):
     pill_pos: Optional[dict] = None  # dragged orbit-pill positions, keyed "resp:move"
 
 
+class RenameRequest(BaseModel):
+    new_name: str
+
+
+@app.get("/boards")
+def get_boards():
+    return {"boards": list_boards()}
+
+
 @app.get("/board/{name}")
 def get_board(name: str):
-    return load_board(name)
+    try:
+        return load_board(name)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
 
 @app.post("/board/{name}")
 def post_board(name: str, data: BoardData):
-    save_board(name, data.model_dump())
+    try:
+        save_board(name, data.model_dump())
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     return {"status": "saved"}
+
+
+@app.post("/board/{name}/rename")
+def rename(name: str, req: RenameRequest):
+    try:
+        rename_board(name, req.new_name)
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except FileExistsError as e:
+        raise HTTPException(status_code=409, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return {"status": "renamed", "name": req.new_name}
+
+
+@app.delete("/board/{name}")
+def delete(name: str):
+    try:
+        delete_board(name)
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return {"status": "deleted"}
 
 
 @app.post("/prompt")

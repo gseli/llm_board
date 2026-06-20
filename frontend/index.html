@@ -9,6 +9,10 @@
 <body>
   <div id="toolbar">
     <span id="board-title">the <em>note</em> board</span>
+    <select id="board-select" title="Switch board"></select>
+    <button id="btn-new-board" title="New board">+ board</button>
+    <button id="btn-rename-board" title="Rename this board">✎</button>
+    <button id="btn-delete-board" title="Delete this board" hidden>🗑</button>
     <button id="btn-new-text">+ text note</button>
     <button id="btn-new-prompt">+ prompt note</button>
     <button id="btn-focus">focus</button>
@@ -23,6 +27,17 @@
       <button id="zoom-out" title="Zoom out (−)">−</button>
       <button id="zoom-fit" class="fit" title="Fit all (0)">fit</button>
       <div id="zoom-level">100%</div>
+    </div>
+  </div>
+  <div id="modal-overlay" hidden>
+    <div id="modal" role="dialog" aria-modal="true" aria-labelledby="modal-title">
+      <h2 id="modal-title"></h2>
+      <p id="modal-message"></p>
+      <input id="modal-input" type="text" />
+      <div id="modal-actions">
+        <button id="modal-cancel" type="button">cancel</button>
+        <button id="modal-ok" type="button">ok</button>
+      </div>
     </div>
   </div>
   <script src="notes.js"></script>
