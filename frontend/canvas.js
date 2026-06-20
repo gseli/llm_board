@@ -21,6 +21,11 @@ const cam = { x: 0, y: 0, k: 1 };
 const MIN_K = 0.2;
 const MAX_K = 2.5;
 
+// True when the OS requests reduced motion. Checked live (not cached) so toggling
+// the system setting takes effect without a reload. Used to skip the tidy glide.
+const prefersReducedMotion = () =>
+  window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+
 function applyCamera() {
   canvas.style.transform = `translate(${cam.x}px, ${cam.y}px) scale(${cam.k})`;
   const label = document.getElementById("zoom-level");
@@ -149,6 +154,10 @@ function openModal({ title, message = "", initial, withInput, withCancel, okLabe
   // passes neither (ok-only); confirm passes withCancel without withInput.
   const showCancel = withCancel ?? withInput;
   return new Promise((resolve) => {
+    // Remember what had focus so we can restore it on close (WCAG 2.4.3) — a
+    // keyboard user returns to where they were instead of being dumped at <body>.
+    const trigger = document.activeElement;
+
     modalEls.title.textContent = title;
     modalEls.message.textContent = message;
     modalEls.ok.textContent = okLabel ?? "ok";
@@ -156,6 +165,9 @@ function openModal({ title, message = "", initial, withInput, withCancel, okLabe
     modalEls.cancel.hidden = !showCancel;
     if (withInput) {
       modalEls.input.value = initial ?? "";
+      // Give the text field an accessible name from the dialog title — a
+      // placeholder alone isn't a label (WCAG 4.1.2 / 3.3.2).
+      modalEls.input.setAttribute("aria-label", title);
     }
     modalEls.overlay.hidden = false;
     if (withInput) {
@@ -165,6 +177,10 @@ function openModal({ title, message = "", initial, withInput, withCancel, okLabe
       modalEls.ok.focus();
     }
 
+    // The focusable controls currently in the dialog, in tab order.
+    const focusables = () =>
+      [modalEls.input, modalEls.cancel, modalEls.ok].filter((el) => !el.hidden);
+
     function cleanup(result) {
       modalEls.overlay.hidden = true;
       modalEls.ok.removeEventListener("click", onOk);
@@ -172,6 +188,11 @@ function openModal({ title, message = "", initial, withInput, withCancel, okLabe
       modalEls.overlay.removeEventListener("mousedown", onBackdrop);
       modalEls.input.removeEventListener("keydown", onKey);
       document.removeEventListener("keydown", onEsc);
+      document.removeEventListener("keydown", onTrap, true);
+      // Restore focus to the trigger (if it's still in the DOM and focusable).
+      if (trigger && typeof trigger.focus === "function" && document.contains(trigger)) {
+        trigger.focus();
+      }
       resolve(result);
     }
     const onOk = () => cleanup(withInput ? modalEls.input.value.trim() : true);
@@ -179,12 +200,27 @@ function openModal({ title, message = "", initial, withInput, withCancel, okLabe
     const onBackdrop = (e) => { if (e.target === modalEls.overlay) cleanup(null); };
     const onKey = (e) => { if (e.key === "Enter") { e.preventDefault(); onOk(); } };
     const onEsc = (e) => { if (e.key === "Escape") cleanup(null); };
+    // Focus trap (WCAG 2.1.2): keep Tab/Shift+Tab cycling inside the dialog so
+    // keyboard focus can't wander behind the overlay. Capture phase so it wins.
+    const onTrap = (e) => {
+      if (e.key !== "Tab") return;
+      const items = focusables();
+      if (!items.length) return;
+      const first = items[0], last = items[items.length - 1];
+      const active = document.activeElement;
+      if (e.shiftKey && (active === first || !items.includes(active))) {
+        e.preventDefault(); last.focus();
+      } else if (!e.shiftKey && (active === last || !items.includes(active))) {
+        e.preventDefault(); first.focus();
+      }
+    };
 
     modalEls.ok.addEventListener("click", onOk);
     modalEls.cancel.addEventListener("click", onCancel);
     modalEls.overlay.addEventListener("mousedown", onBackdrop);
     modalEls.input.addEventListener("keydown", onKey);
     document.addEventListener("keydown", onEsc);
+    document.addEventListener("keydown", onTrap, true);
   });
 }
 
@@ -521,6 +557,7 @@ function replyToResponse(responseNoteId) {
   const responseNote = notes.find((n) => n.id === responseNoteId);
   if (!responseNote) return;
   if (responseNote.loading) return;
+  dismissOrbitCoach(); // forking via "ask your own" also counts — retire the tip
 
   // Free forking: a response can have many follow-ups. No one-child guard.
   const history = buildHistory(responseNoteId);
@@ -541,6 +578,7 @@ function replyToResponse(responseNoteId) {
 function exploreFromResponse(responseNoteId, move, inputText) {
   const responseNote = notes.find((n) => n.id === responseNoteId);
   if (!responseNote || responseNote.loading) return;
+  dismissOrbitCoach(); // they've done the thing — retire the tip for good
 
   const history = buildHistory(responseNoteId);
   const threadId = responseNote.thread_id || responseNote.parent_id;
@@ -827,6 +865,42 @@ function renderAll() {
   drawWires(svg, pos, cards, orbitPos);
 
   lastRender = { svg, pos, cards, orbitPos };
+  syncEmptyState();
+  maybeShowOrbitCoach(orbitPos);
+}
+
+// Show the welcome card only on a truly empty board; hide it the moment any note
+// exists. View-only — never persisted. Routed through renderAll so every state
+// change (add/delete/undo/switch board) keeps it in sync automatically.
+const emptyState = document.getElementById("empty-state");
+function syncEmptyState() {
+  if (emptyState) emptyState.hidden = notes.length > 0;
+}
+
+// First-run coach-mark for the orbit pills (the headline fork-the-thread move).
+// Shown ONCE per browser, the first time any response renders its explore pills.
+// The "seen" flag lives in localStorage (view-only, like lastBoard) — never in a
+// board's JSON. Dismissed by the button, by Esc, or by firing any move.
+const coachOrbit = document.getElementById("coach-orbit");
+const COACH_KEY = "llmboard.coach.orbitSeen";
+function maybeShowOrbitCoach(orbitPos) {
+  if (!coachOrbit) return;
+  if (localStorage.getItem(COACH_KEY)) return;            // already seen
+  const hasPills = orbitPos && Object.keys(orbitPos).length > 0;
+  if (hasPills) coachOrbit.hidden = false;
+}
+function dismissOrbitCoach() {
+  if (!coachOrbit || coachOrbit.hidden) return;
+  coachOrbit.hidden = true;
+  localStorage.setItem(COACH_KEY, "1");
+}
+if (coachOrbit) {
+  document.getElementById("coach-dismiss").addEventListener("click", dismissOrbitCoach);
+  // Esc dismisses; so does actually using a move (handled in exploreFromResponse /
+  // replyToResponse), so the tip never lingers once the user has done the thing.
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape" && !coachOrbit.hidden) dismissOrbitCoach();
+  });
 }
 
 // Latest render state, used by redrawWiresLive during a drag.
@@ -891,6 +965,22 @@ function tidyTree() {
   const pos = computeForest(heights); // {id:{x, y-center}}
 
   pillPos = {}; // pills return to their orbit
+
+  // Reduced-motion: skip the glide entirely. Write final positions and settle in
+  // one clean render — no 1.1s animation that could provoke discomfort.
+  if (prefersReducedMotion()) {
+    notes.forEach((note) => {
+      const p = pos[note.id];
+      if (!p) return;
+      const el = measured[note.id];
+      const h = el ? el.offsetHeight : FALLBACK_H;
+      note.x = p.x;
+      note.y = p.y - h / 2;
+    });
+    renderAll();
+    scheduleSave();
+    return;
+  }
 
   document.body.classList.add("tidying");
   // Write new stored positions and nudge the live elements; CSS glides them.
@@ -1326,6 +1416,14 @@ document.getElementById("btn-new-prompt").addEventListener("click", () => {
   const note = addNote("prompt");
   renderAll();
 });
+// Welcome-card CTA: same as "+ prompt note", but also focus the new note's
+// textarea so the user can start typing the term immediately.
+document.getElementById("empty-add-prompt").addEventListener("click", () => {
+  const note = addNote("prompt");
+  renderAll();
+  const ta = canvas.querySelector(`.note[data-id="${note.id}"] textarea`);
+  if (ta) ta.focus();
+});
 document.getElementById("btn-focus").addEventListener("click", (e) => {
   focusMode = !focusMode;
   if (focusMode) {
@@ -1339,6 +1437,7 @@ document.getElementById("btn-focus").addEventListener("click", (e) => {
     delete document.body.dataset.focusMode;
   }
   e.currentTarget.classList.toggle("active", focusMode);
+  e.currentTarget.setAttribute("aria-pressed", String(focusMode));
   renderAll();
 });
 document.getElementById("btn-tidy").addEventListener("click", tidyTree);

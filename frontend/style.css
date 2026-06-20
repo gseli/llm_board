@@ -17,6 +17,58 @@
   --terminal-accent: #c4654f;
 }
 
+/* ── Reduced motion (WCAG 2.3.3 + "non-disruptive to the senses") ──
+   When the OS asks for less motion, neutralise the large/continuous animations
+   — the loading spinner, the slow tidy glide, the coach slide-in, hover lifts —
+   while leaving the interface fully functional. Tiny colour/opacity fades stay
+   (they don't provoke vestibular discomfort). The tidy JS also short-circuits
+   its glide to an instant settle (see prefersReducedMotion in canvas.js). */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+    scroll-behavior: auto !important;
+  }
+  /* Don't translate things on hover/active — those positional jumps are the
+     most disruptive bit; keep the colour change for feedback. */
+  #toolbar button:hover, #zoom-ui button:hover, .orbit-move .orbit-label:hover,
+  .note-prompt .btn-run:hover:not(:disabled), #undo-slot .btn-undo:hover,
+  #empty-add-prompt:hover, .note:hover .note-inner,
+  #zoom-ui button:active, .note-prompt .btn-run:active:not(:disabled) {
+    transform: none !important;
+  }
+  /* The spinner becomes a static ring rather than spinning forever. */
+  .note-response .response-content.loading::before { animation: none !important; }
+}
+
+/* ── Visible keyboard focus (WCAG 2.4.7) ──
+   Several controls set `outline: none` with no replacement, which strands
+   keyboard users. Restore a consistent, high-contrast focus ring — but only for
+   keyboard focus (:focus-visible), so mouse clicks stay calm and ring-free.
+   A two-tone ring (accent + paper offset) reads on both the cream cards and the
+   dark terminal/response surfaces. */
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+/* On dark surfaces (response cards, coach-mark, terminal inputs) the accent on
+   near-black is low-contrast; use the warm terminal ink for the ring there. */
+.note-response :focus-visible,
+#coach-orbit :focus-visible {
+  outline-color: var(--terminal-ink);
+}
+/* Inputs that previously killed their outline now get the ring back on keyboard
+   focus, plus their existing inset accent on any focus for mouse users. */
+#modal-input:focus-visible,
+.note-text textarea:focus-visible,
+.note-prompt textarea:focus-visible,
+.note-prompt select:focus-visible,
+.orbit-move .orbit-input:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
 body {
   font-family: 'Lora', 'Georgia', serif;
   background:
@@ -312,6 +364,159 @@ body::before {
   color: var(--ink-soft);
   letter-spacing: 0.04em;
 }
+
+/* ── Empty-board welcome state ── */
+/* Sits in the container (screen space), above the world layer but below the
+   modal — so it's readable at any camera. Hidden the moment a note exists. */
+#empty-state {
+  position: absolute;
+  inset: 0;
+  z-index: 40;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;   /* let pan/scroll pass through the empty space… */
+  padding: 24px;
+}
+#empty-state[hidden] { display: none; }
+
+#empty-card {
+  pointer-events: auto;   /* …but the card itself is interactive */
+  position: relative;
+  width: min(440px, 86vw);
+  background: #fffaf0;
+  border: 1.5px solid var(--ink);
+  box-shadow: 4px 4px 0 var(--ink);
+  padding: 34px 32px 28px;
+  text-align: center;
+}
+/* echo the tape strip from real cards so it reads as "part of the board" */
+#empty-card::before {
+  content: '';
+  position: absolute;
+  top: -10px;
+  left: 50%;
+  transform: translateX(-50%) rotate(-1.5deg);
+  width: 84px;
+  height: 20px;
+  background: var(--tape);
+  border-left: 1px solid var(--tape-edge);
+  border-right: 1px solid var(--tape-edge);
+}
+.empty-kicker {
+  font-family: 'Source Code Pro', monospace;
+  font-size: 0.66rem;
+  text-transform: uppercase;
+  letter-spacing: 0.18em;
+  color: var(--ink-soft);
+  margin-bottom: 10px;
+}
+.empty-head {
+  font-family: 'Lora', serif;
+  font-size: 1.5rem;
+  font-weight: 700;
+  line-height: 1.2;
+  letter-spacing: -0.4px;
+  color: var(--ink);
+  margin-bottom: 14px;
+}
+.empty-lead {
+  font-family: 'Lora', serif;
+  font-size: 0.95rem;
+  line-height: 1.6;
+  color: var(--ink-soft);
+  margin-bottom: 22px;
+}
+.empty-lead strong { color: var(--accent); font-weight: 700; }
+.empty-lead em { font-style: italic; color: var(--ink); }
+#empty-add-prompt {
+  font-family: 'Source Code Pro', monospace;
+  font-size: 0.78rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  padding: 10px 20px;
+  background: var(--accent);
+  color: var(--paper);
+  border: 1.5px solid var(--ink);
+  box-shadow: 2px 2px 0 var(--ink);
+  cursor: pointer;
+  transition: transform 0.1s, box-shadow 0.1s, background 0.12s;
+}
+#empty-add-prompt:hover {
+  background: #6e2e24;
+  transform: translate(-1px, -1px);
+  box-shadow: 3px 3px 0 var(--ink);
+}
+#empty-add-prompt:active {
+  transform: translate(1px, 1px);
+  box-shadow: 1px 1px 0 var(--ink);
+}
+.empty-hint {
+  margin-top: 18px;
+  font-family: 'Source Code Pro', monospace;
+  font-size: 0.66rem;
+  color: var(--ink-soft);
+  opacity: 0.85;
+  letter-spacing: 0.02em;
+}
+.empty-hint kbd {
+  font-family: 'Source Code Pro', monospace;
+  font-size: 0.62rem;
+  background: var(--paper-dark);
+  border: 1px solid rgba(43,36,23,0.35);
+  border-radius: 2px;
+  padding: 0 4px;
+}
+
+/* ── First-run coach-mark (orbit pills) ── */
+/* A quiet, one-time tip. Anchored top-centre of the canvas viewport so it never
+   covers the freshly-rendered answer/pills it's describing. Self-dismissing. */
+#coach-orbit {
+  position: absolute;
+  top: 18px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 45;
+  width: min(420px, 90vw);
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  background: var(--terminal-bg);
+  color: var(--terminal-ink);
+  border: 1.5px solid var(--ink);
+  box-shadow: 4px 4px 0 var(--ink);
+  padding: 12px 14px;
+  animation: coach-in 0.45s cubic-bezier(0.16, 0.84, 0.34, 1);
+}
+#coach-orbit[hidden] { display: none; }
+@keyframes coach-in {
+  from { opacity: 0; transform: translate(-50%, -8px); }
+  to   { opacity: 1; transform: translate(-50%, 0); }
+}
+.coach-text {
+  flex: 1;
+  font-family: 'Source Code Pro', monospace;
+  font-size: 0.74rem;
+  line-height: 1.5;
+  color: var(--terminal-dim);
+}
+.coach-text strong { color: var(--terminal-accent); font-weight: 600; }
+#coach-dismiss {
+  flex-shrink: 0;
+  font-family: 'Source Code Pro', monospace;
+  font-size: 0.66rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  padding: 5px 11px;
+  background: transparent;
+  color: var(--terminal-ink);
+  border: 1.5px solid var(--terminal-dim);
+  cursor: pointer;
+  transition: background 0.12s, color 0.12s;
+}
+#coach-dismiss:hover { background: var(--terminal-accent); color: var(--terminal-bg); border-color: var(--terminal-accent); }
 
 /* ── Note cards ── */
 .note {
