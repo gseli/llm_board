@@ -36,12 +36,18 @@ def get_boards():
 
 @app.get("/board/{name}")
 def get_board(name: str):
-    return load_board(name)
+    try:
+        return load_board(name)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
 
 @app.post("/board/{name}")
 def post_board(name: str, data: BoardData):
-    save_board(name, data.model_dump())
+    try:
+        save_board(name, data.model_dump())
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     return {"status": "saved"}
 
 

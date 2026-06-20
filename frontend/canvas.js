@@ -83,8 +83,22 @@ function fitAll() {
 let layout = "tree";
 
 async function loadBoard() {
-  const res = await fetch(`/board/${currentBoard}`);
-  const data = await res.json();
+  // Guard the whole load: an unreachable backend or a bad response otherwise
+  // throws an uncaught rejection here, leaving a blank canvas with no feedback
+  // (and, on boot, skipping the fitAll/refreshBoardList that follow this call).
+  let data;
+  try {
+    const res = await fetch(`/board/${encodeURIComponent(currentBoard)}`);
+    if (!res.ok) throw new Error(`server returned ${res.status}`);
+    data = await res.json();
+  } catch (err) {
+    notes = [];
+    pillPos = {};
+    layout = "tree";
+    renderAll();
+    notify("Couldn't load board", `${err.message}. Is the backend running?`);
+    return;
+  }
   notes = data.notes || [];
   pillPos = data.pill_pos || {};
   const legacy = data.layout !== "tree" && notes.length > 0;
@@ -186,13 +200,27 @@ const btnDeleteBoard = document.getElementById("btn-delete-board");
 
 // Fetch the board list and rebuild the <select>, keeping currentBoard selected.
 async function refreshBoardList() {
-  const res = await fetch("/boards");
-  const { boards } = await res.json();
+  // Degrade gracefully if the list can't be fetched: fall back to showing just
+  // the current board rather than throwing (loadBoard already surfaces a
+  // backend-down modal on boot; no need for a second one here).
+  let boards = [];
+  try {
+    const res = await fetch("/boards");
+    if (res.ok) ({ boards } = await res.json());
+  } catch { /* keep the empty list; fallback below shows currentBoard */ }
   // currentBoard may be brand-new (not yet on disk) — include it so it shows.
   const names = boards.includes(currentBoard) ? boards : [...boards, currentBoard];
-  boardSelect.innerHTML = names
-    .map((n) => `<option value="${n}">${n}</option>`)
-    .join("");
+  // Build options via the DOM, not an innerHTML template — board names are
+  // free user text (the backend only rejects path separators), so interpolating
+  // them into HTML would be a stored-XSS hole. textContent escapes them.
+  boardSelect.replaceChildren(
+    ...names.map((n) => {
+      const opt = document.createElement("option");
+      opt.value = n;
+      opt.textContent = n;
+      return opt;
+    })
+  );
   boardSelect.value = currentBoard;
   // The default board is the always-present home — never deletable.
   btnDeleteBoard.hidden = currentBoard === "default";
