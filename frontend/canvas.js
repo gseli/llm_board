@@ -1934,6 +1934,10 @@ window.addEventListener("keydown", (e) => {
     // state, aria-pressed, and group pre-selection all stay in one place.
     e.preventDefault();
     document.getElementById("btn-focus").click();
+  } else if (e.key === "a" || e.key === "A") {
+    // Tidy / arrange the trees (the ✦ button) — "a" for arrange (t is text note).
+    e.preventDefault();
+    tidyTree();
   }
 });
 
