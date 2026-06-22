@@ -843,17 +843,41 @@ function selectNote(id, { pan = true } = {}) {
 // response). Returns null for a forest root.
 function visibleParentOf(id) {
   const note = notes.find((n) => n.id === id);
-  if (!note || !note.parent_id) return null;
-  const parent = notes.find((n) => n.id === note.parent_id);
-  if (parent && isHiddenPrompt(parent)) return parent.parent_id || null;
-  return note.parent_id;
+  if (!note) return null;
+  if (note.parent_id) {
+    const parent = notes.find((n) => n.id === note.parent_id);
+    if (parent && isHiddenPrompt(parent)) return parent.parent_id || null;
+    return note.parent_id;
+  }
+  // A break-out root has no parent_id but keeps origin_id (the answer it came
+  // from, shown as a dashed link). For navigation we treat that origin as its
+  // parent, so a break-out reads as a sibling of the origin's forks and ← jumps
+  // back to it. Only when the origin still exists; otherwise it's a plain root.
+  if (note.origin_id && notes.some((n) => n.id === note.origin_id)) return note.origin_id;
+  return null;
+}
+
+// Navigable children of a node: its visible forked responses PLUS any break-out
+// trees that originated from it (origin_id), so → can reach them and they share
+// the forks' sibling list.
+function navChildrenOf(id) {
+  const kids = displayChildrenOf(id).map((c) => c.node);
+  const breakouts = notes.filter((n) => !n.parent_id && n.origin_id === id);
+  return kids.concat(breakouts);
+}
+
+// Top-level roots for the ↑/↓ sibling list: forest roots that have no live
+// navigation-parent (so break-outs, which now live under their origin, don't
+// clutter the base-root list — unless their origin was deleted).
+function topLevelRoots() {
+  return forestRoots().filter((n) => !visibleParentOf(n.id));
 }
 
 // A node's visible siblings (including itself), ordered top-to-bottom by stored y
-// so ↑/↓ match what's on screen. Forest roots are siblings of each other.
+// so ↑/↓ match what's on screen.
 function siblingsOf(id) {
   const vp = visibleParentOf(id);
-  const list = vp ? displayChildrenOf(vp).map((c) => c.node) : forestRoots();
+  const list = vp ? navChildrenOf(vp) : topLevelRoots();
   return list.slice().sort((a, b) => (a.y || 0) - (b.y || 0));
 }
 
@@ -861,12 +885,12 @@ function siblingsOf(id) {
 // "up"/"down" (previous/next sibling). No-op when there's no node that way.
 function navigate(dir) {
   if (!selectedId) {
-    const roots = siblingsOf((forestRoots()[0] || {}).id);
+    const roots = topLevelRoots().slice().sort((a, b) => (a.y || 0) - (b.y || 0));
     if (roots.length) selectNote(roots[0].id);
     return;
   }
   if (dir === "right") {
-    const kids = displayChildrenOf(selectedId).map((c) => c.node);
+    const kids = navChildrenOf(selectedId);
     if (kids.length) selectNote(kids.slice().sort((a, b) => (a.y || 0) - (b.y || 0))[0].id);
   } else if (dir === "left") {
     const vp = visibleParentOf(selectedId);
@@ -880,16 +904,35 @@ function navigate(dir) {
   }
 }
 
-// Fire the d-th orbit move (1-based) of the selected response by clicking its
-// pill — reusing the pill's own handler, so instant moves fork and needsInput
-// moves reveal their inline field exactly as a mouse click would.
+// The forked response a given one-shot move already produced on a response, if
+// any: response → hidden prompt (prompt_template === moveId) → forked response.
+function existingChildViaMove(responseId, moveId) {
+  const hidden = notes.find(
+    (n) => n.parent_id === responseId && isHiddenPrompt(n) && n.prompt_template === moveId
+  );
+  if (!hidden) return null;
+  const kid = notes.find((n) => n.parent_id === hidden.id);
+  return kid ? kid.id : null;
+}
+
+// Number key on the selected response: fire its d-th orbit move (1-based). For a
+// one-shot move (no input) that has ALREADY been used, jump to the existing
+// answer instead of forking a duplicate — pressing the number reads as "go to
+// that branch". (needsInput moves still reveal their field, since each use is a
+// distinct question; and the mouse keeps its deliberate re-fork on a spent pill.)
 function fireOrbitByNumber(d) {
   if (!selectedId) return;
+  const note = notes.find((n) => n.id === selectedId);
+  if (!note) return;
+  const move = orbitMovesFor(note)[d - 1];
+  if (!move) return;
+  if (!move.needsInput) {
+    const existing = existingChildViaMove(note.id, move.id);
+    if (existing) { selectNote(existing); return; }
+  }
   const layer = document.getElementById("orbits");
-  if (!layer) return;
-  const pill = layer.querySelector(`.orbit-move[data-resp="${selectedId}"][data-pill-index="${d}"]`);
-  if (!pill) return;
-  const label = pill.querySelector(".orbit-label");
+  const pill = layer && layer.querySelector(`.orbit-move[data-resp="${selectedId}"][data-pill-index="${d}"]`);
+  const label = pill && pill.querySelector(".orbit-label");
   if (label) label.click();
 }
 
@@ -1886,6 +1929,11 @@ window.addEventListener("keydown", (e) => {
     e.preventDefault();
     addNote("text");
     renderAll();
+  } else if (e.key === "f" || e.key === "F") {
+    // Toggle focus mode — reuse the toolbar button's own handler so the active
+    // state, aria-pressed, and group pre-selection all stay in one place.
+    e.preventDefault();
+    document.getElementById("btn-focus").click();
   }
 });
 
