@@ -90,6 +90,15 @@ Each note in `boards/*.json`:
 
 `x`/`y` are the note's **stored** position — set once when created, on drag, or by Tidy; the renderer paints them, it does not recompute layout. The board JSON also carries top-level `"layout": "tree"` (migration stamp) and `"pill_pos"` (`{"responseId:moveId": {x, y}}` for dragged orbit pills). All of these are freeform keys the backend round-trips untouched (`layout`/`pill_pos` are declared optional on `BoardData` so Pydantic doesn't drop the board-level fields).
 
+### Storage & board-name safety invariants (PR #36 — keep these)
+
+A **board name is untrusted free user text** — it becomes a filename, and the backend only rejects path separators (`/`, `\`, `.`, `..`, empty) and caps length at 200 bytes; everything else (incl. HTML metacharacters) is valid. So:
+
+- **Never interpolate a board name into `innerHTML`/template HTML.** The switcher `<select>` in `refreshBoardList()` builds `<option>`s via `createElement` + `textContent` (which escapes) — it was a stored-XSS hole before. Don't "simplify" it back to an `innerHTML` map.
+- **`save_board` writes atomically** (temp file + `os.replace`) so a crash mid-write can't leave a truncated, unopenable file. **`load_board` degrades a corrupt file to `{"notes": []}`** instead of 500ing the user out. Keep both — a plain `json.dump` to the target path reintroduces the data-loss window.
+- **`_board_path` raises `ValueError`** on an invalid/over-long name; every fs route in `main.py` (GET/POST/rename/delete) maps it to a **400**, not an unhandled `OSError` (500).
+- **`loadBoard`/`refreshBoardList` guard their fetches** — a dead backend surfaces a `notify()` modal and a clean empty state, never a silent blank canvas. (See the `board-name-untrusted` memory.)
+
 ### Conversation threads (the tree)
 
 A thread is a tree: `root prompt → response → [orbit move] → response → [orbit move] → response → …`, growing rightward. A response can fork into **many** children.
@@ -210,8 +219,8 @@ To add a new provider:
 
 ## Known limitations / planned future work
 
-- **No multi-board UI** — the board name is hardcoded to `"default"` in `canvas.js`. The backend already supports named boards via `GET/POST /board/:name`; a board switcher in the toolbar just needs frontend wiring. (Under the tree model: a board is a *forest* of rabbit-holes; the switcher is "multiple forests.")
-- **Keyboard-first interaction (#12)** — still open: visible focus rings + key shortcuts. Pairs naturally with the tree (arrow keys to walk it, number keys to fire orbit moves).
+- **Multi-board organization** — the switcher + create/rename/delete board menu shipped (#2, #33); a board is a *forest* of rabbit-holes and the toolbar `<select>` + ⋯ menu manage "multiple forests". What's still missing is *organization at scale* (grouping/search/ordering once there are many boards), not the UI itself.
+- **Keyboard-first interaction (#12)** — *partially done*: `:focus-visible` rings, the `n`/`t`/`0` shortcuts, and the modal focus-trap shipped (PRs #37–#38). Still open: arrow keys to walk the tree and number keys to fire orbit moves.
 - **Smarter new-node placement** — `placeNewNode` finds a spot once and never re-tidies, so dense forking can produce overlap until you press ✦ Tidy. A height-aware / clear-slot placement would reduce manual tidying.
 - **Explore moves are a fixed set** — LLM-generated *contextual* suggestions (Perplexity-style, derived from the answer) are a deferred next step. Root-prompt moves aren't unified with the follow-up set yet.
 - **Chain summarization** — deprioritized: a user-triggered "Collapse into summary card" for very long branches.
