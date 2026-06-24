@@ -9,20 +9,33 @@
 <body>
   <div id="toolbar" role="toolbar" aria-label="Board tools">
     <span id="board-title">the <em>note</em> board</span>
-    <select id="board-select" title="Switch board (double-click to rename)" aria-label="Switch board"></select>
-    <button id="btn-new-board" title="New board">+ new</button>
-    <div id="board-menu-wrap">
-      <button id="btn-board-menu" title="Board actions" aria-label="Board actions"
-              aria-haspopup="true" aria-expanded="false">⋯</button>
-      <div id="board-menu" role="menu" aria-label="Board actions" hidden>
-        <button id="menu-rename-board" role="menuitem" type="button">✎ Rename board</button>
-        <button id="menu-delete-board" role="menuitem" type="button">🗑 Delete board</button>
+    <div id="board-switch-wrap">
+      <button id="btn-board-switch" title="Switch board (/)" aria-label="Switch board"
+              aria-haspopup="true" aria-expanded="false">▾ <span id="board-switch-label">default</span></button>
+      <div id="board-pop" role="menu" aria-label="Boards" hidden>
+        <input id="board-search" type="text" placeholder="search boards…"
+               aria-label="Search boards" autocomplete="off" />
+        <ul id="board-list" role="listbox" aria-label="Board list"></ul>
+        <div id="board-pop-actions">
+          <button id="menu-new-board" type="button">+ new</button>
+          <button id="menu-rename-board" type="button">✎ rename</button>
+          <button id="menu-delete-board" type="button">🗑 delete</button>
+        </div>
       </div>
     </div>
     <button id="btn-new-text">+ text note</button>
     <button id="btn-new-prompt">+ prompt note</button>
     <button id="btn-focus" aria-pressed="false">focus</button>
     <button id="btn-tidy" title="Gently arrange the trees" aria-label="Tidy: gently arrange the trees">✦ tidy</button>
+    <div id="tree-index-wrap">
+      <button id="btn-tree-index" title="Index of trees on this board" aria-label="Trees on this board"
+              aria-haspopup="true" aria-expanded="false">☰ trees</button>
+      <div id="tree-pop" role="menu" aria-label="Trees on this board" hidden>
+        <input id="tree-search" type="text" placeholder="filter trees…"
+               aria-label="Filter trees" autocomplete="off" />
+        <ul id="tree-list" role="listbox" aria-label="Tree list"></ul>
+      </div>
+    </div>
     <span id="save-status"></span>
     <span id="undo-slot"></span>
   </div>

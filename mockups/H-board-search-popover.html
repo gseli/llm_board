@@ -1,0 +1,226 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Mockup H — Searchable board switcher (#41)</title>
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Lora:ital,wght@0,400;0,600;0,700;1,400&family=Source+Code+Pro:wght@400;500;600&display=swap');
+
+/* ============================================================
+   MOCKUP H — SEARCHABLE BOARD SWITCHER (#41)
+   Replaces the native <select> + "+ new" + "⋯" kebab with ONE
+   switcher button that opens a popover:
+     · a search field (filters the board list, client-side,
+       substring + case-insensitive)
+     · a scrollable board list (● marks the current board)
+     · create / rename / delete folded into a thin action row
+   Keyboard: "/" opens + focuses search · ↑/↓ move highlight ·
+   Enter switches to the highlighted match · Esc closes.
+   Paper/parchment language reused from the real #board-menu:
+   paper bg, 1.5px ink border, 4px hard offset shadow, mono type.
+   (Interactive — type, arrow, click. No backend.)
+   ============================================================ */
+
+*, *::before, *::after { box-sizing:border-box; margin:0; padding:0; }
+:root {
+  --paper:#f4ecd8; --paper-dark:#e8dcc0; --ink:#2b2417; --ink-soft:#5a4f3a;
+  --accent:#8b3a2f; --accent-soft:#c4654f; --line:rgba(43,36,23,0.14);
+}
+body { font-family:'Lora',Georgia,serif; background:var(--paper); color:var(--ink);
+  height:100vh; overflow:hidden; display:flex; flex-direction:column; }
+
+#toolbar { display:flex; align-items:center; gap:10px; padding:10px 20px;
+  background:var(--paper-dark); border-bottom:2px solid var(--ink); flex-shrink:0; z-index:100; }
+#board-title { font-family:'Lora',serif; font-size:1.15rem; font-weight:700; margin-right:6px; }
+#board-title em { font-style:italic; color:var(--accent); font-weight:400; }
+
+#toolbar button { font-family:'Source Code Pro',monospace; font-size:.72rem; font-weight:600;
+  letter-spacing:.04em; padding:6px 12px; border:1.5px solid var(--ink); background:transparent;
+  color:var(--ink); cursor:pointer; transition:background .12s,color .12s; }
+#toolbar button:hover { background:var(--ink); color:var(--paper); }
+#btn-new-prompt { background:var(--accent); color:var(--paper); border-color:var(--accent); }
+#btn-new-prompt:hover { background:var(--accent-soft); }
+#save-status { margin-left:auto; font-family:'Source Code Pro',monospace; font-size:.66rem; color:var(--ink-soft); }
+
+/* ── Board switcher button + popover ── */
+#board-switch-wrap { position:relative; display:inline-flex; }
+#btn-board-switch { display:inline-flex; align-items:center; gap:6px; max-width:220px; }
+#btn-board-switch .lbl { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+#btn-board-switch[aria-expanded="true"] { background:var(--ink); color:var(--paper); }
+
+#board-pop {
+  position:absolute; top:calc(100% + 6px); left:0; z-index:200;
+  width:260px; background:var(--paper); border:1.5px solid var(--ink);
+  box-shadow:4px 4px 0 var(--ink); padding:6px; display:flex; flex-direction:column; gap:6px;
+}
+#board-pop[hidden] { display:none; }
+#board-search {
+  font-family:'Source Code Pro',monospace; font-size:.72rem; color:var(--ink);
+  padding:7px 9px; border:1.5px solid var(--ink); background:#fffdf6; width:100%;
+}
+#board-search::placeholder { color:var(--ink-soft); }
+#board-search:focus { outline:2px solid var(--accent); outline-offset:1px; }
+
+#board-list { list-style:none; max-height:260px; overflow-y:auto; display:flex; flex-direction:column; gap:1px; }
+#board-list li { display:block; }
+#board-list button.row {
+  width:100%; display:flex; align-items:center; gap:8px; text-align:left;
+  font-family:'Source Code Pro',monospace; font-size:.72rem; font-weight:600; letter-spacing:.03em;
+  padding:8px 10px; background:transparent; border:none; color:var(--ink); cursor:pointer;
+  transition:background .12s,color .12s;
+}
+#board-list button.row:hover, #board-list button.row.hi { background:var(--ink); color:var(--paper); }
+#board-list button.row .dot { width:12px; color:var(--accent); flex-shrink:0; }
+#board-list button.row.hi .dot { color:var(--paper); }
+#board-list .empty { padding:10px; font-family:'Source Code Pro',monospace; font-size:.7rem;
+  color:var(--ink-soft); font-style:italic; }
+
+#board-pop-actions { display:flex; gap:4px; border-top:1px solid var(--line); padding-top:6px; }
+#board-pop-actions button {
+  flex:1; font-family:'Source Code Pro',monospace; font-size:.66rem; font-weight:600; letter-spacing:.02em;
+  padding:7px 6px; background:transparent; border:1.5px solid var(--ink); color:var(--ink);
+  cursor:pointer; transition:background .12s,color .12s;
+}
+#board-pop-actions button:hover { background:var(--ink); color:var(--paper); }
+#menu-delete-board:hover { background:var(--accent); color:var(--paper); border-color:var(--accent); }
+#menu-delete-board[hidden] { display:none; }
+
+#canvas { flex:1; position:relative; overflow:hidden;
+  background: radial-gradient(circle, rgba(43,36,23,0.06) 1px, transparent 1px) 0 0 / 26px 26px, var(--paper); }
+#note-demo { position:absolute; left:60px; top:60px; width:260px; background:#fffdf6;
+  border:1.5px solid var(--ink); box-shadow:4px 4px 0 var(--ink); padding:14px; }
+#note-demo h3 { font-size:1rem; margin-bottom:6px; }
+#note-demo p { font-size:.85rem; color:var(--ink-soft); line-height:1.5; }
+.tag { position:absolute; bottom:16px; left:20px; font-family:'Source Code Pro',monospace;
+  font-size:.66rem; color:var(--ink-soft); }
+.tag kbd { font-family:'Source Code Pro',monospace; background:rgba(43,36,23,.1);
+  border:1px solid var(--ink-soft); border-radius:2px; padding:0 4px; }
+</style>
+</head>
+<body>
+  <div id="toolbar" role="toolbar" aria-label="Board tools">
+    <span id="board-title">the <em>note</em> board</span>
+
+    <div id="board-switch-wrap">
+      <button id="btn-board-switch" aria-haspopup="true" aria-expanded="false" title="Switch board (/)">
+        ▾ <span class="lbl" id="board-switch-label">Quantum notes</span>
+      </button>
+      <div id="board-pop" role="menu" aria-label="Boards" hidden>
+        <input id="board-search" type="text" placeholder="search boards…" aria-label="Search boards" autocomplete="off" />
+        <ul id="board-list" role="listbox" aria-label="Board list"></ul>
+        <div id="board-pop-actions">
+          <button id="menu-new-board" type="button">+ new</button>
+          <button id="menu-rename-board" type="button">✎ rename</button>
+          <button id="menu-delete-board" type="button">🗑 delete</button>
+        </div>
+      </div>
+    </div>
+
+    <button id="btn-new-text">+ text note</button>
+    <button id="btn-new-prompt">+ prompt note</button>
+    <button>focus</button>
+    <button>✦ tidy</button>
+    <button>☰ trees</button>
+    <span id="save-status">Saved</span>
+  </div>
+
+  <div id="canvas">
+    <div id="note-demo">
+      <h3>Click <em>“▾ Quantum notes”</em></h3>
+      <p>…or press <strong>/</strong> anywhere. Type to filter, ↑/↓ to highlight, Enter to switch, Esc to close.</p>
+    </div>
+    <div class="tag">Mockup H · Board search + menu redesign (#41) · press <kbd>/</kbd></div>
+  </div>
+
+<script>
+// Demo data — note the deliberately tricky names (untrusted free text): the real
+// build renders every row with textContent, never innerHTML, so the <img> name
+// below shows as literal text and never executes.
+const BOARDS = [
+  "default", "Life", "Quantum notes", "Linear algebra", "Roman history",
+  "Reading list", "Project Wand", '<img src=x onerror=alert(1)>',
+];
+let current = "Quantum notes";
+
+const wrap = document.getElementById("board-switch-wrap");
+const btn = document.getElementById("btn-board-switch");
+const pop = document.getElementById("board-pop");
+const search = document.getElementById("board-search");
+const list = document.getElementById("board-list");
+const label = document.getElementById("board-switch-label");
+const btnDelete = document.getElementById("menu-delete-board");
+let hi = 0; // highlighted row index among current matches
+
+function matches(q) {
+  const s = q.trim().toLowerCase();
+  return s ? BOARDS.filter((n) => n.toLowerCase().includes(s)) : BOARDS.slice();
+}
+function renderRows(q) {
+  const rows = matches(q);
+  list.replaceChildren();
+  if (!rows.length) {
+    const li = document.createElement("li");
+    const div = document.createElement("div");
+    div.className = "empty";
+    div.textContent = `no boards match “${q.trim()}”`; // textContent — escapes
+    li.appendChild(div); list.appendChild(li);
+    return;
+  }
+  hi = Math.min(hi, rows.length - 1);
+  rows.forEach((name, i) => {
+    const li = document.createElement("li");
+    const b = document.createElement("button");
+    b.className = "row" + (i === hi ? " hi" : "");
+    b.type = "button";
+    const dot = document.createElement("span");
+    dot.className = "dot";
+    dot.textContent = name === current ? "●" : "";
+    const txt = document.createElement("span");
+    txt.textContent = name; // textContent — the malicious name renders inert
+    b.append(dot, txt);
+    b.addEventListener("click", () => switchTo(name));
+    b.addEventListener("mousemove", () => { hi = i; paintHi(); });
+    li.appendChild(b); list.appendChild(li);
+  });
+}
+function paintHi() {
+  [...list.querySelectorAll("button.row")].forEach((b, i) => b.classList.toggle("hi", i === hi));
+}
+function setPop(open) {
+  pop.hidden = !open;
+  btn.setAttribute("aria-expanded", String(open));
+  if (open) { search.value = ""; hi = 0; renderRows(""); search.focus(); }
+}
+function switchTo(name) {
+  current = name;
+  label.textContent = name;                      // textContent — escapes the label too
+  btnDelete.hidden = name === "default";
+  setPop(false);
+}
+
+btn.addEventListener("click", (e) => { e.stopPropagation(); setPop(pop.hidden); });
+search.addEventListener("input", () => { hi = 0; renderRows(search.value); });
+search.addEventListener("keydown", (e) => {
+  const rows = matches(search.value);
+  if (e.key === "ArrowDown") { e.preventDefault(); hi = Math.min(hi + 1, rows.length - 1); paintHi(); }
+  else if (e.key === "ArrowUp") { e.preventDefault(); hi = Math.max(hi - 1, 0); paintHi(); }
+  else if (e.key === "Enter") { e.preventDefault(); if (rows[hi]) switchTo(rows[hi]); }
+  else if (e.key === "Escape") { setPop(false); btn.focus(); }
+});
+document.getElementById("menu-new-board").addEventListener("click", () => { setPop(false); alert("(demo) new board flow"); });
+document.getElementById("menu-rename-board").addEventListener("click", () => { setPop(false); alert("(demo) rename flow"); });
+btnDelete.addEventListener("click", () => { setPop(false); alert("(demo) delete flow"); });
+
+// "/" opens + focuses search (guarded against typing into a field).
+window.addEventListener("keydown", (e) => {
+  if (e.target.tagName === "INPUT" || e.target.tagName === "TEXTAREA") return;
+  if (e.metaKey || e.ctrlKey || e.altKey) return;
+  if (e.key === "/") { e.preventDefault(); setPop(true); }
+});
+document.addEventListener("click", (e) => { if (!pop.hidden && !e.target.closest("#board-switch-wrap")) setPop(false); });
+
+btnDelete.hidden = current === "default";
+</script>
+</body>
+</html>
