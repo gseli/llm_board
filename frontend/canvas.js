@@ -278,10 +278,18 @@ const confirm = (title, message, okLabel = "delete") =>
 
 // ── Multi-board switcher ──────────────────────────────────────
 
-const boardSelect = document.getElementById("board-select");
+const boardSwitchLabel = document.getElementById("board-switch-label");
+const boardList = document.getElementById("board-list");
+const boardSearch = document.getElementById("board-search");
 const btnDeleteBoard = document.getElementById("menu-delete-board");
 
-// Fetch the board list and rebuild the <select>, keeping currentBoard selected.
+// The board names last fetched from the backend, cached so the popover search can
+// filter purely client-side (no per-keystroke fetch). Refreshed by refreshBoardList.
+let boardNames = [];
+// Highlighted row index (keyboard ↑/↓) among the CURRENT filtered matches.
+let boardHi = 0;
+
+// Fetch the board list, cache the names, and repaint the switcher button + popover.
 async function refreshBoardList() {
   // Degrade gracefully if the list can't be fetched: fall back to showing just
   // the current board rather than throwing (loadBoard already surfaces a
@@ -292,21 +300,253 @@ async function refreshBoardList() {
     if (res.ok) ({ boards } = await res.json());
   } catch { /* keep the empty list; fallback below shows currentBoard */ }
   // currentBoard may be brand-new (not yet on disk) — include it so it shows.
-  const names = boards.includes(currentBoard) ? boards : [...boards, currentBoard];
-  // Build options via the DOM, not an innerHTML template — board names are
-  // free user text (the backend only rejects path separators), so interpolating
-  // them into HTML would be a stored-XSS hole. textContent escapes them.
-  boardSelect.replaceChildren(
-    ...names.map((n) => {
-      const opt = document.createElement("option");
-      opt.value = n;
-      opt.textContent = n;
-      return opt;
-    })
-  );
-  boardSelect.value = currentBoard;
+  boardNames = boards.includes(currentBoard) ? boards : [...boards, currentBoard];
+  // Switcher button label — textContent escapes the (untrusted) board name.
+  boardSwitchLabel.textContent = currentBoard;
   // The default board is the always-present home — never deletable.
   btnDeleteBoard.hidden = currentBoard === "default";
+  // Repaint the open list (or prime it for next open) honouring any live filter.
+  renderBoardRows(boardSearch.value);
+}
+
+// Board names that match the (case-insensitive substring) query; empty query → all.
+function matchingBoards(query) {
+  const q = (query || "").trim().toLowerCase();
+  return q ? boardNames.filter((n) => n.toLowerCase().includes(q)) : boardNames.slice();
+}
+
+// Rebuild the popover's board list for the given filter. Each row is built via the
+// DOM (createElement + textContent), NOT an innerHTML template — board names are
+// free user text (the backend only rejects path separators), so interpolating them
+// would be a stored-XSS hole. textContent escapes them. (PR #36 invariant.)
+function renderBoardRows(query) {
+  const rows = matchingBoards(query);
+  boardList.replaceChildren();
+  if (!rows.length) {
+    const li = document.createElement("li");
+    const div = document.createElement("div");
+    div.className = "pop-empty";
+    div.textContent = `no boards match “${(query || "").trim()}”`;
+    li.appendChild(div);
+    boardList.appendChild(li);
+    return;
+  }
+  if (boardHi >= rows.length) boardHi = rows.length - 1;
+  if (boardHi < 0) boardHi = 0;
+  rows.forEach((name, i) => {
+    const li = document.createElement("li");
+    const b = document.createElement("button");
+    b.type = "button";
+    b.className = "pop-row" + (i === boardHi ? " hi" : "");
+    if (name === currentBoard) b.classList.add("current");
+    const dot = document.createElement("span");
+    dot.className = "pop-dot";
+    dot.textContent = name === currentBoard ? "●" : "";
+    const txt = document.createElement("span");
+    txt.className = "pop-label";
+    txt.textContent = name;
+    b.append(dot, txt);
+    b.addEventListener("click", () => { setBoardPop(false); switchBoard(name); });
+    b.addEventListener("mousemove", () => { boardHi = i; paintBoardHi(); });
+    li.appendChild(b);
+    boardList.appendChild(li);
+  });
+}
+
+// Repaint just the keyboard-highlight class without rebuilding rows.
+function paintBoardHi() {
+  [...boardList.querySelectorAll(".pop-row")].forEach((b, i) =>
+    b.classList.toggle("hi", i === boardHi)
+  );
+}
+
+// ── Branch index (#42): an outline of the board's trees ───────
+// A "☰ trees" popover lists the board's forest roots (topLevelRoots) as a shallow
+// nested outline — break-outs indented under the tree they came from. Clicking a
+// row selects that node and eases the camera to it (selectNote). View-only — derived
+// from the notes array on each render, never persisted.
+
+const treePop = document.getElementById("tree-pop");
+const btnTreeIndex = document.getElementById("btn-tree-index");
+const treeList = document.getElementById("tree-list");
+const treeSearch = document.getElementById("tree-search");
+
+// A short, display-safe label for a root. Source is always note.content (root
+// prompts AND break-outs are prompt notes — breakOutTerm stores the term as
+// content). Real boards hold empty and noisy content (leaked UI glyphs, U+FFFC),
+// so normalize: first line → strip object-replacement/control chars → collapse
+// whitespace → trim → truncate. Empty prompt falls back to its answer's first line;
+// empty text note → "(untitled)".
+function labelForRoot(note) {
+  const clean = (s) =>
+    (s || "")
+      .replace(/[\uFFFC\u0000-\u001F\u007F]/g, " ") // object-replacement + control chars
+      .split("\n")[0]
+      .replace(/\s+/g, " ")
+      .trim();
+  let label = clean(note.content);
+  if (!label && note.type === "prompt") {
+    // No prompt text — borrow the first line of its answer so it still reads.
+    const answer = childrenOf(note.id).find((c) => c.type === "response");
+    if (answer) label = clean(answer.content);
+  }
+  if (!label) label = "(untitled)";
+  return label.length > 40 ? label.slice(0, 39) + "…" : label;
+}
+
+// Label for an in-tree follow-up step: the explore move that produced it. The hidden
+// follow-up prompt carries the move id in prompt_template and any typed term in
+// content (exploreFromResponse). Look the id up in EXPLORE_MOVES then TEMPLATES
+// (notes.js) for the human label; append the typed term for input moves.
+function moveLabel(hiddenPrompt) {
+  const id = hiddenPrompt.prompt_template;
+  const move =
+    (typeof EXPLORE_MOVES !== "undefined" && EXPLORE_MOVES.find((m) => m.id === id)) ||
+    (typeof TEMPLATES !== "undefined" && TEMPLATES.find((t) => t.id === id));
+  const input = (hiddenPrompt.content || "")
+    .replace(/[\uFFFC\u0000-\u001F\u007F]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  // "ask your own" / legacy free-text reply: no matching move, but the content IS
+  // the question - show it on its own rather than a bare "follow-up:".
+  let label = move ? move.label : input || "follow-up";
+  if (move && input) label = label.replace(/…\s*$/, "") + ": " + input;
+  return label.length > 40 ? label.slice(0, 39) + "…" : label;
+}
+
+// Visible-card count of a tree (its parent-linked subtree, minus the hidden
+// follow-up prompts that render no card). Drives the "·N" size badge.
+function treeSize(rootId) {
+  return notes.filter((n) => rootOf(n.id) === rootId && !isHiddenPrompt(n)).length;
+}
+
+// Spatial order (top→bottom by stored y, then x) so the index mirrors the canvas —
+// the same ordering the keyboard sibling-walk uses.
+function bySpatial(a, b) {
+  return (a.y || 0) - (b.y || 0) || (a.x || 0) - (b.x || 0);
+}
+
+// The response that answers a prompt/text root (its first response child), or
+// undefined. The whole thread hangs off this — the root's forks live under it.
+function answerOf(node) {
+  return childrenOf(node.id).find((c) => c.type === "response");
+}
+
+// Flatten a tree into outline entries (the full train of thought). Each entry:
+// {note, depth, kind, label, parent, count}. kind: "root" | "fork" | "breakout".
+// For a root we emit its row then walk its answer's children; for a response, its
+// children = its in-tree forks (displayChildrenOf — the move-labelled follow-ups)
+// PLUS the break-outs that branched from THAT exact response (origin_id), interleaved
+// in spatial order. Recursing over every response means a break-out nests where it
+// was taken, and break-out-of-break-out chains fall out naturally.
+function buildOutline(root, entries) {
+  const rootIdx = entries.length;
+  entries.push({
+    note: root, depth: 0, kind: "root",
+    label: labelForRoot(root), parent: null, count: treeSize(root.id),
+  });
+  const ans = answerOf(root);
+  if (ans) emitChildren(ans.id, 1, rootIdx, entries);
+}
+
+function emitChildren(responseId, depth, parentIdx, entries) {
+  const forks = displayChildrenOf(responseId).map((c) => ({
+    note: c.node, kind: "fork", label: moveLabel(c.viaPrompt || {}),
+  }));
+  const breaks = notes
+    .filter((n) => n.origin_id === responseId)
+    .map((b) => ({ note: b, kind: "breakout", label: labelForRoot(b) }));
+  [...forks, ...breaks]
+    .sort((a, b) => bySpatial(a.note, b.note))
+    .forEach((child) => {
+      const idx = entries.length;
+      entries.push({
+        note: child.note, depth, kind: child.kind, label: child.label,
+        parent: parentIdx,
+        count: child.kind === "breakout" ? treeSize(child.note.id) : 0,
+      });
+      // Recurse into the child's own thread (a fork response, or a break-out's answer).
+      const next = child.kind === "fork" ? child.note : answerOf(child.note);
+      if (next) emitChildren(next.id, depth + 1, idx, entries);
+    });
+}
+
+// Rebuild the trees outline for the given filter. Roots are spatially ordered; a
+// truly-empty root (untitled with no descendants) is dropped. A non-empty query
+// keeps any entry whose label matches PLUS its ancestors (so matches keep context).
+// All text via textContent (labels derive from untrusted board content).
+function renderTreeIndex(query) {
+  if (!treeList) return;
+  const q = (query || "").trim().toLowerCase();
+  treeList.replaceChildren();
+  let shown = 0;
+  topLevelRoots().slice().sort(bySpatial).forEach((root) => {
+    const entries = [];
+    buildOutline(root, entries);
+    if (entries[0].label === "(untitled)" && entries.length === 1) return; // dead root
+    let visible = entries;
+    if (q) {
+      const hit = entries.map((e) => e.label.toLowerCase().includes(q));
+      if (!hit.some(Boolean)) return;
+      const keep = new Set();
+      entries.forEach((e, i) => {
+        if (!hit[i]) return;
+        let j = i;
+        while (j != null) { keep.add(j); j = entries[j].parent; }
+      });
+      visible = entries.filter((_, i) => keep.has(i));
+    }
+    visible.forEach((e) => treeList.appendChild(treeRow(e)));
+    shown++;
+  });
+  if (!shown) {
+    const li = document.createElement("li");
+    const div = document.createElement("div");
+    div.className = "pop-empty";
+    div.textContent = `no trees match “${(query || "").trim()}”`;
+    li.appendChild(div);
+    treeList.appendChild(li);
+  }
+}
+
+// One outline row. depth → inline indent; kind → marker + colour (root ▸ / fork → /
+// break-out ↳ teal); ● when selected. A "·N" size badge marks thread heads (root +
+// break-out) so deep rabbit-holes stand out.
+function treeRow(entry) {
+  const { note, depth, kind, label, count } = entry;
+  const li = document.createElement("li");
+  const b = document.createElement("button");
+  b.type = "button";
+  b.className = "pop-row" + (kind === "breakout" ? " tree-break" : "");
+  if (note.id === selectedId) b.classList.add("current");
+  b.style.paddingLeft = 10 + depth * 16 + "px";
+  const mark = document.createElement("span");
+  mark.className = "pop-dot";
+  mark.textContent =
+    note.id === selectedId ? "●" : kind === "fork" ? "→" : kind === "breakout" ? "↳" : "▸";
+  const txt = document.createElement("span");
+  txt.className = "pop-label";
+  txt.textContent = label;
+  b.append(mark, txt);
+  if (count > 1) {
+    const badge = document.createElement("span");
+    badge.className = "pop-count";
+    badge.textContent = "·" + count;
+    b.append(badge);
+  }
+  b.addEventListener("click", () => { setTreePop(false); selectNote(note.id); });
+  li.appendChild(b);
+  return li;
+}
+
+function setTreePop(open) {
+  treePop.hidden = !open;
+  btnTreeIndex.setAttribute("aria-expanded", String(open));
+  if (open) {
+    treeSearch.value = "";
+    renderTreeIndex("");
+    treeSearch.focus();
+  }
 }
 
 // Lowest free "New Board" / "New Board N" name given the existing names.
@@ -1147,6 +1387,9 @@ function renderAll() {
   lastRender = { svg, pos, cards, orbitPos };
   syncEmptyState();
   maybeShowOrbitCoach(orbitPos);
+  // Keep the trees outline live (it's DOM outside #canvas) — but only pay the cost
+  // when the popover is actually open. Selection changes also route through here.
+  if (treePop && !treePop.hidden) renderTreeIndex(treeSearch.value);
 }
 
 // Show the welcome card only on a truly empty board; hide it the moment any note
@@ -1845,7 +2088,7 @@ document.getElementById("btn-tidy").addEventListener("click", tidyTree);
   // focus it), so you don't have to travel to the toolbar to start a thought.
   // Ignored on cards/controls so double-clicking text/headers still behaves.
   container.addEventListener("dblclick", (e) => {
-    if (e.target.closest(".note, #zoom-ui, #empty-state, #coach-orbit, #coach-keys, #board-menu")) return;
+    if (e.target.closest(".note, #zoom-ui, #empty-state, #coach-orbit, #coach-keys, #board-pop, #tree-pop")) return;
     const r = container.getBoundingClientRect();
     const wx = (e.clientX - r.left - cam.x) / cam.k;
     const wy = (e.clientY - r.top - cam.y) / cam.k;
@@ -1887,6 +2130,9 @@ window.addEventListener("keydown", (e) => {
 
   // ? toggles the keyboard cheat-sheet (Shift+/). Works any time.
   if (e.key === "?") { e.preventDefault(); toggleKeysCoach(); return; }
+
+  // / opens the board switcher and focuses its search (keyboard-first board find).
+  if (e.key === "/") { e.preventDefault(); setBoardPop(true); return; }
 
   // Arrow keys walk the thought-tree from the current selection.
   const arrows = { ArrowRight: "right", ArrowLeft: "left", ArrowUp: "up", ArrowDown: "down" };
@@ -1943,33 +2189,62 @@ window.addEventListener("keydown", (e) => {
 
 // ── Board switcher events ─────────────────────────────────────
 
-boardSelect.addEventListener("change", (e) => switchBoard(e.target.value));
-// Double-click the board name → rename it (a quick, discoverable shortcut for
-// the menu's Rename). preventDefault stops the native dropdown from opening.
-boardSelect.addEventListener("dblclick", (e) => { e.preventDefault(); renameBoard(); });
-document.getElementById("btn-new-board").addEventListener("click", () => newBoard());
+// One searchable popover replaces the old <select> + "+ new" + ⋯ kebab: a switcher
+// button opens a filterable board list with create/rename/delete folded in. Closes
+// on pick, outside click, or Esc. Search/highlight state is view-only.
+const boardPop = document.getElementById("board-pop");
+const btnBoardSwitch = document.getElementById("btn-board-switch");
 
-// Board-actions kebab menu (⋯): consolidates rename + delete behind one labelled
-// control instead of two cryptic glyph buttons. Opens a small popover; closes on
-// pick, outside click, or Esc.
-const boardMenu = document.getElementById("board-menu");
-const btnBoardMenu = document.getElementById("btn-board-menu");
-function setBoardMenu(open) {
-  boardMenu.hidden = !open;
-  btnBoardMenu.setAttribute("aria-expanded", String(open));
+function setBoardPop(open) {
+  boardPop.hidden = !open;
+  btnBoardSwitch.setAttribute("aria-expanded", String(open));
+  if (open) {
+    boardSearch.value = "";
+    boardHi = 0;
+    renderBoardRows("");
+    boardSearch.focus();
+  }
 }
-btnBoardMenu.addEventListener("click", (e) => {
+
+btnBoardSwitch.addEventListener("click", (e) => {
   e.stopPropagation();
-  setBoardMenu(boardMenu.hidden);
+  setBoardPop(boardPop.hidden);
 });
-document.getElementById("menu-rename-board").addEventListener("click", () => { setBoardMenu(false); renameBoard(); });
-document.getElementById("menu-delete-board").addEventListener("click", () => { setBoardMenu(false); deleteBoard(); });
-// Dismiss the menu on any outside click or Esc.
+boardSearch.addEventListener("input", () => { boardHi = 0; renderBoardRows(boardSearch.value); });
+// In-field keys: ↑/↓ move the highlight, Enter switches to it, Esc closes.
+boardSearch.addEventListener("keydown", (e) => {
+  const rows = matchingBoards(boardSearch.value);
+  if (e.key === "ArrowDown") { e.preventDefault(); boardHi = Math.min(boardHi + 1, rows.length - 1); paintBoardHi(); }
+  else if (e.key === "ArrowUp") { e.preventDefault(); boardHi = Math.max(boardHi - 1, 0); paintBoardHi(); }
+  else if (e.key === "Enter") { e.preventDefault(); if (rows[boardHi]) { setBoardPop(false); switchBoard(rows[boardHi]); } }
+  else if (e.key === "Escape") { e.preventDefault(); setBoardPop(false); btnBoardSwitch.focus(); }
+});
+// Actions reuse the unchanged new/rename/delete handlers; close the pop first.
+document.getElementById("menu-new-board").addEventListener("click", () => { setBoardPop(false); newBoard(); });
+document.getElementById("menu-rename-board").addEventListener("click", () => { setBoardPop(false); renameBoard(); });
+document.getElementById("menu-delete-board").addEventListener("click", () => { setBoardPop(false); deleteBoard(); });
+// Dismiss on any outside click or Esc.
 document.addEventListener("click", (e) => {
-  if (!boardMenu.hidden && !e.target.closest("#board-menu-wrap")) setBoardMenu(false);
+  if (!boardPop.hidden && !e.target.closest("#board-switch-wrap")) setBoardPop(false);
 });
 document.addEventListener("keydown", (e) => {
-  if (e.key === "Escape" && !boardMenu.hidden) setBoardMenu(false);
+  if (e.key === "Escape" && !boardPop.hidden) setBoardPop(false);
+});
+
+// ── Branch index (☰ trees) events ─────────────────────────────
+btnTreeIndex.addEventListener("click", (e) => {
+  e.stopPropagation();
+  setTreePop(treePop.hidden);
+});
+treeSearch.addEventListener("input", () => renderTreeIndex(treeSearch.value));
+treeSearch.addEventListener("keydown", (e) => {
+  if (e.key === "Escape") { e.preventDefault(); setTreePop(false); btnTreeIndex.focus(); }
+});
+document.addEventListener("click", (e) => {
+  if (!treePop.hidden && !e.target.closest("#tree-index-wrap")) setTreePop(false);
+});
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape" && !treePop.hidden) setTreePop(false);
 });
 
 // ── Boot ──────────────────────────────────────────────────────

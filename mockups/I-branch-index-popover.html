@@ -1,0 +1,227 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Mockup I — Branch index (trees) popover (#42)</title>
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Lora:ital,wght@0,400;0,600;0,700;1,400&family=Source+Code+Pro:wght@400;500;600&display=swap');
+
+/* ============================================================
+   MOCKUP I — BRANCH INDEX / "TREES" POPOVER (#42)
+   A "☰ trees" toolbar button opens a popover listing the board's
+   forest roots as a SHALLOW NESTED OUTLINE: one row per top-level
+   tree (topLevelRoots), with its break-out children indented (↳).
+   Clicking a row SELECTS that node (● marker) and eases the camera
+   to it — select + pan only, never touches focus mode.
+   A filter field narrows by label; a parent is kept if it OR any
+   child matches. Labels derive from the root: prompt → its term,
+   text note → first line, break-out → its term, empty → (untitled).
+   View-only — derived from the notes array, never persisted.
+   (Interactive — type, click a row to "fly" the camera.)
+   ============================================================ */
+
+*, *::before, *::after { box-sizing:border-box; margin:0; padding:0; }
+:root {
+  --paper:#f4ecd8; --paper-dark:#e8dcc0; --card:#fffdf6; --ink:#2b2417; --ink-soft:#5a4f3a;
+  --accent:#8b3a2f; --accent-soft:#c4654f; --line:rgba(43,36,23,0.14);
+  --term-bg:#1a1611; --term-ink:#d4c896; --breakout:#2e6b6b;
+}
+body { font-family:'Lora',Georgia,serif; background:var(--paper); color:var(--ink);
+  height:100vh; overflow:hidden; display:flex; flex-direction:column; }
+
+#toolbar { display:flex; align-items:center; gap:10px; padding:10px 20px;
+  background:var(--paper-dark); border-bottom:2px solid var(--ink); flex-shrink:0; z-index:100; }
+#board-title { font-family:'Lora',serif; font-size:1.15rem; font-weight:700; margin-right:6px; }
+#board-title em { font-style:italic; color:var(--accent); font-weight:400; }
+#toolbar button { font-family:'Source Code Pro',monospace; font-size:.72rem; font-weight:600;
+  letter-spacing:.04em; padding:6px 12px; border:1.5px solid var(--ink); background:transparent;
+  color:var(--ink); cursor:pointer; transition:background .12s,color .12s; }
+#toolbar button:hover { background:var(--ink); color:var(--paper); }
+#save-status { margin-left:auto; font-family:'Source Code Pro',monospace; font-size:.66rem; color:var(--ink-soft); }
+
+/* ── Trees button + popover ── */
+#tree-index-wrap { position:relative; display:inline-flex; }
+#btn-tree-index[aria-expanded="true"] { background:var(--ink); color:var(--paper); }
+#tree-pop {
+  position:absolute; top:calc(100% + 6px); left:0; z-index:200;
+  width:280px; background:var(--paper); border:1.5px solid var(--ink);
+  box-shadow:4px 4px 0 var(--ink); padding:6px; display:flex; flex-direction:column; gap:6px;
+}
+#tree-pop[hidden] { display:none; }
+#tree-search { font-family:'Source Code Pro',monospace; font-size:.72rem; color:var(--ink);
+  padding:7px 9px; border:1.5px solid var(--ink); background:#fffdf6; width:100%; }
+#tree-search::placeholder { color:var(--ink-soft); }
+#tree-search:focus { outline:2px solid var(--accent); outline-offset:1px; }
+
+#tree-list { list-style:none; max-height:300px; overflow-y:auto; display:flex; flex-direction:column; gap:1px; }
+#tree-list button.row {
+  width:100%; display:flex; align-items:center; gap:8px; text-align:left;
+  font-family:'Source Code Pro',monospace; font-size:.72rem; font-weight:600; letter-spacing:.02em;
+  padding:8px 10px; background:transparent; border:none; color:var(--ink); cursor:pointer;
+  transition:background .12s,color .12s;
+}
+#tree-list button.row:hover { background:var(--ink); color:var(--paper); }
+#tree-list button.row.current { background:rgba(139,58,47,0.1); }
+#tree-list button.row .dot { width:12px; color:var(--accent); flex-shrink:0; }
+#tree-list button.row:hover .dot { color:var(--paper); }
+#tree-list button.tree-child { padding-left:30px; font-weight:400; color:var(--breakout); }
+#tree-list button.tree-child .arr { color:var(--breakout); flex-shrink:0; }
+#tree-list button.tree-child:hover { background:var(--breakout); color:#fff; }
+#tree-list button.tree-child:hover .arr { color:#fff; }
+#tree-list .empty { padding:10px; font-family:'Source Code Pro',monospace; font-size:.7rem;
+  color:var(--ink-soft); font-style:italic; }
+
+/* ── Canvas + camera demo ── */
+#canvas { flex:1; position:relative; overflow:hidden;
+  background: radial-gradient(circle, rgba(43,36,23,0.06) 1px, transparent 1px) 0 0 / 26px 26px, var(--paper); }
+#world { position:absolute; inset:0; transition:transform .5s cubic-bezier(.22,.61,.36,1); transform-origin:0 0; }
+.node { position:absolute; width:200px; padding:10px 12px; border:1.5px solid var(--ink);
+  box-shadow:3px 3px 0 var(--ink); font-family:'Source Code Pro',monospace; font-size:.7rem; }
+.node.prompt { background:var(--card); }
+.node.response { background:var(--term-bg); color:var(--term-ink); }
+.node.breakout { background:#dceaea; border-color:var(--breakout); color:var(--breakout); }
+.node.sel { outline:3px solid var(--accent); outline-offset:2px; }
+.node .ty { font-size:.56rem; letter-spacing:.12em; text-transform:uppercase; opacity:.7; display:block; margin-bottom:4px; }
+.tag { position:absolute; bottom:16px; left:20px; font-family:'Source Code Pro',monospace;
+  font-size:.66rem; color:var(--ink-soft); z-index:50; }
+</style>
+</head>
+<body>
+  <div id="toolbar" role="toolbar" aria-label="Board tools">
+    <span id="board-title">the <em>note</em> board</span>
+    <button>▾ Quantum notes</button>
+    <button>+ text note</button>
+    <button>+ prompt note</button>
+    <button>focus</button>
+    <button>✦ tidy</button>
+
+    <div id="tree-index-wrap">
+      <button id="btn-tree-index" aria-haspopup="true" aria-expanded="false" title="Index of trees on this board">☰ trees</button>
+      <div id="tree-pop" role="menu" aria-label="Trees on this board" hidden>
+        <input id="tree-search" type="text" placeholder="filter trees…" aria-label="Filter trees" autocomplete="off" />
+        <ul id="tree-list" role="listbox" aria-label="Tree list"></ul>
+      </div>
+    </div>
+    <span id="save-status">Saved</span>
+  </div>
+
+  <div id="canvas">
+    <div id="world"></div>
+    <div class="tag">Mockup I · Branch index (#42) · open <strong>☰ trees</strong>, click a row to fly there</div>
+  </div>
+
+<script>
+// Forest of roots (id, type, label, x/y on the world) + break-out children that
+// nest under their origin. Mirrors topLevelRoots() + the break-out set.
+const ROOTS = [
+  { id:"r1", type:"prompt",   label:"photosynthesis",            x:80,  y:60,
+    kids:[] },
+  { id:"r2", type:"prompt",   label:"entropy",                   x:80,  y:280,
+    kids:[ { id:"b1", label:"reversibility" }, { id:"b2", label:"enthalpy" } ] },
+  { id:"r3", type:"text",     label:"a freeform note about heat engines and the second law",
+    x:80, y:620, kids:[] },
+  { id:"r4", type:"prompt",   label:"markov chains",             x:1400, y:120,
+    kids:[ { id:"b3", label:"stationary distribution" } ] },
+  { id:"r5", type:"prompt",   label:"",                          x:1450, y:520, kids:[] }, // empty → (untitled)
+];
+
+const TRUNC = 40;
+function trunc(s){ return s.length > TRUNC ? s.slice(0, TRUNC - 1) + "…" : s; }
+function labelFor(r){ const t = (r.label || "").trim().split("\n")[0].trim(); return t ? trunc(t) : "(untitled)"; }
+
+// Paint the canvas nodes (so clicking a row visibly moves the camera to one).
+const world = document.getElementById("world");
+function paintWorld(){
+  world.replaceChildren();
+  ROOTS.forEach((r) => {
+    const d = document.createElement("div");
+    d.className = "node " + r.type; d.dataset.id = r.id;
+    d.style.left = r.x + "px"; d.style.top = r.y + "px";
+    const ty = document.createElement("span"); ty.className = "ty"; ty.textContent = r.type;
+    const lb = document.createElement("div"); lb.textContent = labelFor(r);
+    d.append(ty, lb); world.appendChild(d);
+    r.kids.forEach((k, i) => {
+      const c = document.createElement("div");
+      c.className = "node breakout"; c.dataset.id = k.id;
+      c.style.left = (r.x + 260) + "px"; c.style.top = (r.y + i * 110) + "px";
+      const cy = document.createElement("span"); cy.className = "ty"; cy.textContent = "break-out";
+      const cl = document.createElement("div"); cl.textContent = trunc(k.label);
+      c.append(cy, cl); world.appendChild(c);
+    });
+  });
+}
+paintWorld();
+
+let selected = null;
+function selectNote(id, x, y){
+  selected = id;
+  [...world.children].forEach((n) => n.classList.toggle("sel", n.dataset.id === id));
+  // ease camera so the node sits ~near the top-left third of the canvas
+  world.style.transform = `translate(${-x + 120}px, ${-y + 100}px)`;
+  renderTree(document.getElementById("tree-search").value);
+}
+
+// ── Popover + nested outline ──
+const wrap = document.getElementById("tree-index-wrap");
+const btn = document.getElementById("btn-tree-index");
+const pop = document.getElementById("tree-pop");
+const search = document.getElementById("tree-search");
+const list = document.getElementById("tree-list");
+
+function renderTree(q){
+  const s = q.trim().toLowerCase();
+  list.replaceChildren();
+  let shown = 0;
+  ROOTS.forEach((r) => {
+    const rl = labelFor(r).toLowerCase();
+    const kidMatch = r.kids.filter((k) => trunc(k.label).toLowerCase().includes(s));
+    const parentMatch = !s || rl.includes(s);
+    if (!parentMatch && kidMatch.length === 0) return;
+    shown++;
+    // parent row
+    const li = document.createElement("li");
+    const b = document.createElement("button");
+    b.className = "row" + (r.id === selected ? " current" : ""); b.type = "button";
+    const dot = document.createElement("span"); dot.className = "dot";
+    dot.textContent = r.id === selected ? "●" : "▸";
+    const txt = document.createElement("span"); txt.textContent = labelFor(r); // textContent
+    b.append(dot, txt);
+    b.addEventListener("click", () => selectNote(r.id, r.x, r.y));
+    li.appendChild(b); list.appendChild(li);
+    // nested break-out children (shown if parent matched, else just the matching kids)
+    const kids = (parentMatch ? r.kids : kidMatch);
+    kids.forEach((k, i) => {
+      const kli = document.createElement("li");
+      const kb = document.createElement("button");
+      kb.className = "row tree-child" + (k.id === selected ? " current" : ""); kb.type = "button";
+      const arr = document.createElement("span"); arr.className = "dot arr"; arr.textContent = "↳";
+      const ktx = document.createElement("span"); ktx.textContent = trunc(k.label); // textContent
+      kb.append(arr, ktx);
+      kb.addEventListener("click", () => selectNote(k.id, r.x + 260, r.y + i * 110));
+      kli.appendChild(kb); list.appendChild(kli);
+    });
+  });
+  if (!shown) {
+    const li = document.createElement("li");
+    const div = document.createElement("div"); div.className = "empty";
+    div.textContent = `no trees match “${q.trim()}”`;
+    li.appendChild(div); list.appendChild(li);
+  }
+}
+
+function setPop(open){
+  pop.hidden = !open; btn.setAttribute("aria-expanded", String(open));
+  if (open) { search.value = ""; renderTree(""); search.focus(); }
+}
+btn.addEventListener("click", (e) => { e.stopPropagation(); setPop(pop.hidden); });
+search.addEventListener("input", () => renderTree(search.value));
+search.addEventListener("keydown", (e) => { if (e.key === "Escape") { setPop(false); btn.focus(); } });
+document.addEventListener("click", (e) => { if (!pop.hidden && !e.target.closest("#tree-index-wrap")) setPop(false); });
+window.addEventListener("keydown", (e) => {
+  if (e.target.tagName === "INPUT" || e.target.tagName === "TEXTAREA") return;
+  if (e.key === "Escape" && !pop.hidden) setPop(false);
+});
+</script>
+</body>
+</html>

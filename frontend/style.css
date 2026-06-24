@@ -144,56 +144,124 @@ body::before {
   gap: 5px;
 }
 
-#board-select {
-  font-family: 'Source Code Pro', 'Courier New', monospace;
-  font-size: 0.72rem;
-  font-weight: 600;
-  letter-spacing: 0.04em;
-  padding: 6px 10px;
-  border: 1.5px solid var(--ink);
-  background: transparent;
-  color: var(--ink);
-  cursor: pointer;
-  max-width: 180px;
+/* ── Switcher + index popovers (board search #41, branch index #42) ── */
+#board-switch-wrap, #tree-index-wrap { position: relative; display: inline-flex; }
+#btn-board-switch { max-width: 220px; }
+#btn-board-switch[aria-expanded="true"],
+#btn-tree-index[aria-expanded="true"] { background: var(--ink); color: var(--paper); }
+/* The board name is user content — show it as typed, not toolbar-uppercased. */
+#board-switch-label {
+  text-transform: none;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
-#btn-new-board:hover    { background: var(--ink); color: var(--paper); }
-
-/* ── Board actions menu (⋯ kebab → Rename / Delete) ── */
-#board-menu-wrap { position: relative; display: inline-flex; }
-#btn-board-menu { line-height: 1; }
-#btn-board-menu:hover,
-#btn-board-menu[aria-expanded="true"] { background: var(--ink); color: var(--paper); }
-#board-menu {
+#board-pop, #tree-pop {
   position: absolute;
   top: calc(100% + 6px);
   left: 0;
   z-index: 200;
-  min-width: 168px;
   background: var(--paper);
   border: 1.5px solid var(--ink);
   box-shadow: 4px 4px 0 var(--ink);
   display: flex;
   flex-direction: column;
-  padding: 4px;
-  gap: 2px;
+  gap: 6px;
+  padding: 6px;
 }
-#board-menu[hidden] { display: none; }
-#board-menu button {
+#board-pop { width: 260px; }
+/* The trees button sits near the right of the toolbar, so anchor its popover to the
+   right edge — left:0 would push it off-screen. */
+#tree-pop { width: 280px; left: auto; right: 0; }
+#board-pop[hidden], #tree-pop[hidden] { display: none; }
+
+#board-search, #tree-search {
+  font-family: 'Source Code Pro', monospace;
+  font-size: 0.72rem;
+  color: var(--ink);
+  padding: 7px 9px;
+  border: 1.5px solid var(--ink);
+  background: #fffdf6;
+  width: 100%;
+}
+#board-search::placeholder, #tree-search::placeholder { color: var(--ink-soft); }
+
+#board-list, #tree-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  max-height: 280px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+/* Rows are scoped under the popover IDs so they beat `#toolbar button` (the popover
+   lives inside #toolbar, so the base toolbar-button border/uppercase would leak in
+   on specificity otherwise). */
+#board-pop .pop-row, #tree-pop .pop-row {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  text-align: left;
   font-family: 'Source Code Pro', monospace;
   font-size: 0.72rem;
   font-weight: 600;
-  letter-spacing: 0.04em;
-  text-align: left;
-  padding: 8px 12px;
+  letter-spacing: 0.03em;
+  text-transform: none;
+  padding: 8px 10px;
   background: transparent;
   border: none;
   color: var(--ink);
   cursor: pointer;
   transition: background 0.12s, color 0.12s;
 }
-#menu-rename-board:hover { background: var(--ink); color: var(--paper); }
-#menu-delete-board:hover { background: var(--accent); color: var(--paper); }
+#board-pop .pop-row:hover, #board-pop .pop-row.hi,
+#tree-pop .pop-row:hover, #tree-pop .pop-row.hi { background: var(--ink); color: var(--paper); }
+#board-pop .pop-row.current, #tree-pop .pop-row.current { background: rgba(139, 58, 47, 0.1); }
+.pop-row .pop-dot { width: 12px; flex-shrink: 0; color: var(--accent); text-align: center; }
+.pop-row .pop-label { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pop-row .pop-count { flex-shrink: 0; padding-left: 8px; font-weight: 400; font-size: 0.66rem; color: var(--ink-soft); }
+.pop-row:hover .pop-dot, .pop-row.hi .pop-dot { color: var(--paper); }
+.pop-row:hover .pop-count, .pop-row.hi .pop-count { color: var(--paper); }
+/* Break-out steps (tangents) read in the teal break-out hue; depth indent is set
+   inline per row. In-tree fork steps keep the default ink/accent. */
+#tree-pop .pop-row.tree-break { font-weight: 400; color: #2e6b6b; }
+.pop-row.tree-break .pop-dot { color: #2e6b6b; }
+#tree-pop .pop-row.tree-break:hover { background: #2e6b6b; color: var(--paper); }
+.pop-row.tree-break:hover .pop-dot { color: var(--paper); }
+.pop-empty {
+  padding: 10px;
+  font-family: 'Source Code Pro', monospace;
+  font-size: 0.7rem;
+  color: var(--ink-soft);
+  font-style: italic;
+}
+
+#board-pop-actions {
+  display: flex;
+  gap: 4px;
+  border-top: 1px solid rgba(43, 36, 23, 0.14);
+  padding-top: 6px;
+}
+#board-pop-actions button {
+  flex: 1;
+  font-family: 'Source Code Pro', monospace;
+  font-size: 0.66rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  text-transform: none;
+  padding: 7px 6px;
+  background: transparent;
+  border: 1.5px solid var(--ink);
+  color: var(--ink);
+  cursor: pointer;
+  transition: background 0.12s, color 0.12s;
+}
+#board-pop-actions button:hover { background: var(--ink); color: var(--paper); }
+#menu-delete-board:hover { background: var(--accent); color: var(--paper); border-color: var(--accent); }
 #menu-delete-board[hidden] { display: none; }
 
 /* ── Modal (themed prompt / notice — replaces native window.prompt/alert) ── */
