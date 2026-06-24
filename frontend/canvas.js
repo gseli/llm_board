@@ -9,6 +9,11 @@ let saveTimer = null;
 let focusMode = false;     // dim every group except the active one?
 let activeGroupId = null;  // dataset id of the focused group (chain root id, or a text note id)
 
+// Keyboard selection is view-only too — the id of the single "current" card the
+// arrow keys walk and the number keys act on. Distinct from activeGroupId (which
+// is a whole tree). Cleared on board switch/load and when its node is deleted.
+let selectedId = null;
+
 const canvas = document.getElementById("canvas");
 const saveStatus = document.getElementById("save-status");
 
@@ -84,6 +89,39 @@ function fitAll() {
   cam.x = (r.width - (maxX + minX) * k) / 2;
   cam.y = (r.height - (maxY + minY) * k) / 2;
   applyCamera();
+}
+
+// Ease the camera so a node is comfortably in view, but only if it's currently
+// off-screen (or near the edge) — so walking the tree with the arrows never loses
+// the selected card, yet a node already in view doesn't twitch. Pans only (zoom
+// unchanged); honours reduced-motion with an instant set.
+function centerOnIfOffscreen(id) {
+  const el = canvas.querySelector(`.note[data-id="${id}"]`);
+  if (!el) return;
+  const r = document.getElementById("canvas-container").getBoundingClientRect();
+  const w = el.offsetWidth, h = el.offsetHeight;
+  const cx = el.offsetLeft + w / 2, cy = el.offsetTop + h / 2; // world centre
+  // Node's bounding box in screen space.
+  const sLeft = cam.x + el.offsetLeft * cam.k;
+  const sTop = cam.y + el.offsetTop * cam.k;
+  const sRight = sLeft + w * cam.k;
+  const sBottom = sTop + h * cam.k;
+  const margin = 60;
+  const inView = sLeft >= margin && sTop >= margin &&
+    sRight <= r.width - margin && sBottom <= r.height - margin;
+  if (inView) return;
+  const targetX = r.width / 2 - cx * cam.k;
+  const targetY = r.height / 2 - cy * cam.k;
+  if (prefersReducedMotion()) { cam.x = targetX; cam.y = targetY; applyCamera(); return; }
+  const fromX = cam.x, fromY = cam.y, DUR = 320, t0 = performance.now();
+  const ease = (p) => 1 - Math.pow(1 - p, 3); // easeOutCubic
+  (function tick(now) {
+    const p = Math.min(1, (now - t0) / DUR);
+    cam.x = fromX + (targetX - fromX) * ease(p);
+    cam.y = fromY + (targetY - fromY) * ease(p);
+    applyCamera();
+    if (p < 1) requestAnimationFrame(tick);
+  })(t0);
 }
 
 // ── Persistence ──────────────────────────────────────────────
@@ -296,6 +334,7 @@ async function switchBoard(name) {
   showUndo();
   focusMode = false;
   activeGroupId = null;
+  selectedId = null;
   document.getElementById("btn-focus").classList.remove("active");
 
   currentBoard = name;
@@ -330,6 +369,7 @@ async function newBoard() {
   showUndo();
   focusMode = false;
   activeGroupId = null;
+  selectedId = null;
   document.getElementById("btn-focus").classList.remove("active");
 
   notes = [];
@@ -401,6 +441,7 @@ async function deleteBoard() {
   showUndo();
   focusMode = false;
   activeGroupId = null;
+  selectedId = null;
   document.getElementById("btn-focus").classList.remove("active");
 
   currentBoard = "default";
@@ -501,6 +542,7 @@ function deleteNote(id) {
 
   const removedIds = new Set(removed.map((n) => n.id));
   notes = notes.filter((n) => !removedIds.has(n.id));
+  if (removedIds.has(selectedId)) selectedId = null; // don't keep a dead selection
 
   // Drop any dragged-pill positions for the removed responses (else they leak).
   Object.keys(pillPos).forEach((k) => {
@@ -785,6 +827,115 @@ function rootOf(id) {
   return cur ? cur.id : id;
 }
 
+// ── Keyboard selection & tree navigation ─────────────────────
+// Selection is view-only (selectedId). selectNote repaints so the .selected ring
+// shows, eases the card into view if it's off-screen, and (first time only) pops
+// the keyboard coach so the moves teach themselves.
+function selectNote(id, { pan = true } = {}) {
+  selectedId = id;
+  renderAll();
+  if (pan && id) centerOnIfOffscreen(id);
+  maybeShowKeysCoach();
+}
+
+// The visible parent of a node, skipping the hidden follow-up prompt that sits
+// between a source response and its forked response (response → hidden prompt →
+// response). Returns null for a forest root.
+function visibleParentOf(id) {
+  const note = notes.find((n) => n.id === id);
+  if (!note) return null;
+  if (note.parent_id) {
+    const parent = notes.find((n) => n.id === note.parent_id);
+    if (parent && isHiddenPrompt(parent)) return parent.parent_id || null;
+    return note.parent_id;
+  }
+  // A break-out root has no parent_id but keeps origin_id (the answer it came
+  // from, shown as a dashed link). For navigation we treat that origin as its
+  // parent, so a break-out reads as a sibling of the origin's forks and ← jumps
+  // back to it. Only when the origin still exists; otherwise it's a plain root.
+  if (note.origin_id && notes.some((n) => n.id === note.origin_id)) return note.origin_id;
+  return null;
+}
+
+// Navigable children of a node: its visible forked responses PLUS any break-out
+// trees that originated from it (origin_id), so → can reach them and they share
+// the forks' sibling list.
+function navChildrenOf(id) {
+  const kids = displayChildrenOf(id).map((c) => c.node);
+  const breakouts = notes.filter((n) => !n.parent_id && n.origin_id === id);
+  return kids.concat(breakouts);
+}
+
+// Top-level roots for the ↑/↓ sibling list: forest roots that have no live
+// navigation-parent (so break-outs, which now live under their origin, don't
+// clutter the base-root list — unless their origin was deleted).
+function topLevelRoots() {
+  return forestRoots().filter((n) => !visibleParentOf(n.id));
+}
+
+// A node's visible siblings (including itself), ordered top-to-bottom by stored y
+// so ↑/↓ match what's on screen.
+function siblingsOf(id) {
+  const vp = visibleParentOf(id);
+  const list = vp ? navChildrenOf(vp) : topLevelRoots();
+  return list.slice().sort((a, b) => (a.y || 0) - (b.y || 0));
+}
+
+// Move selection along the tree. dir: "right" (first child), "left" (parent),
+// "up"/"down" (previous/next sibling). No-op when there's no node that way.
+function navigate(dir) {
+  if (!selectedId) {
+    const roots = topLevelRoots().slice().sort((a, b) => (a.y || 0) - (b.y || 0));
+    if (roots.length) selectNote(roots[0].id);
+    return;
+  }
+  if (dir === "right") {
+    const kids = navChildrenOf(selectedId);
+    if (kids.length) selectNote(kids.slice().sort((a, b) => (a.y || 0) - (b.y || 0))[0].id);
+  } else if (dir === "left") {
+    const vp = visibleParentOf(selectedId);
+    if (vp) selectNote(vp);
+  } else if (dir === "up" || dir === "down") {
+    const sibs = siblingsOf(selectedId);
+    const i = sibs.findIndex((n) => n.id === selectedId);
+    if (i === -1) return;
+    const j = dir === "up" ? i - 1 : i + 1;
+    if (j >= 0 && j < sibs.length) selectNote(sibs[j].id);
+  }
+}
+
+// The forked response a given one-shot move already produced on a response, if
+// any: response → hidden prompt (prompt_template === moveId) → forked response.
+function existingChildViaMove(responseId, moveId) {
+  const hidden = notes.find(
+    (n) => n.parent_id === responseId && isHiddenPrompt(n) && n.prompt_template === moveId
+  );
+  if (!hidden) return null;
+  const kid = notes.find((n) => n.parent_id === hidden.id);
+  return kid ? kid.id : null;
+}
+
+// Number key on the selected response: fire its d-th orbit move (1-based). For a
+// one-shot move (no input) that has ALREADY been used, jump to the existing
+// answer instead of forking a duplicate — pressing the number reads as "go to
+// that branch". (needsInput moves still reveal their field, since each use is a
+// distinct question; and the mouse keeps its deliberate re-fork on a spent pill.)
+function fireOrbitByNumber(d) {
+  if (!selectedId) return;
+  const note = notes.find((n) => n.id === selectedId);
+  if (!note) return;
+  const move = orbitMovesFor(note)[d - 1];
+  if (!move) return;
+  if (!move.needsInput) {
+    const existing = existingChildViaMove(note.id, move.id);
+    if (existing) { selectNote(existing); return; }
+  }
+  const layer = document.getElementById("orbits");
+  const pill = layer && layer.querySelector(`.orbit-move[data-resp="${selectedId}"][data-pill-index="${d}"]`);
+  const label = pill && pill.querySelector(".orbit-label");
+  if (label) label.click();
+}
+
 // Height a node's subtree occupies: max(own card height, total height of its
 // children's subtrees + gaps). Uses measured heights from `heights`. `seen`
 // guards against a parent_id cycle.
@@ -980,9 +1131,11 @@ function renderAll() {
     attachResize(el, note);
     attachNodeDrag(el, note);        // free per-node drag + long-press unlink
     if (note.type === "response") attachSelectionBreakout(el, note);
+    if (note.id === selectedId) el.classList.add("selected");
     const rootId = rootOf(note.id);
     applyFocus(el, rootId);
     attachFocusClick(el, rootId);
+    attachSelectClick(el, note.id);
     canvas.appendChild(el);
     cards[note.id] = el;
     pos[note.id] = { x: note.x || 0, y: (note.y || 0) + el.offsetHeight / 2 };
@@ -1027,6 +1180,37 @@ if (coachOrbit) {
   // so the tip never lingers once the user has done the thing.
   document.addEventListener("keydown", (e) => {
     if (e.key === "Escape" && !coachOrbit.hidden) dismissOrbitCoach();
+  });
+}
+
+// Keyboard cheat-sheet (#coach-keys): shown ONCE the first time a card is selected
+// (self-teaching the arrow/number bindings), then rediscoverable any time via ?.
+// The "seen" flag is view-only localStorage, never a board's JSON — same contract
+// as the orbit coach above.
+const coachKeys = document.getElementById("coach-keys");
+const KEYS_COACH_KEY = "llmboard.coach.keysSeen";
+function maybeShowKeysCoach() {
+  if (!coachKeys) return;
+  if (localStorage.getItem(KEYS_COACH_KEY)) return; // already seen
+  coachKeys.hidden = false;
+}
+function dismissKeysCoach() {
+  if (!coachKeys || coachKeys.hidden) return;
+  coachKeys.hidden = true;
+  localStorage.setItem(KEYS_COACH_KEY, "1");
+}
+// ? re-opens (or closes) the panel even after it's been dismissed, so the legend
+// is never lost. Opening this way also marks it seen.
+function toggleKeysCoach() {
+  if (!coachKeys) return;
+  if (coachKeys.hidden) { coachKeys.hidden = false; localStorage.setItem(KEYS_COACH_KEY, "1"); }
+  else coachKeys.hidden = true;
+}
+if (coachKeys) {
+  const d = document.getElementById("coach-keys-dismiss");
+  if (d) d.addEventListener("click", dismissKeysCoach);
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape" && !coachKeys.hidden) dismissKeysCoach();
   });
 }
 
@@ -1187,11 +1371,16 @@ function buildOrbits(layer, pos, cards) {
       const left = pinned ? pinned.x : defaultX;
       const top = pinned ? pinned.y : firstTop + i * (MOVE_H + ORBIT_VGAP);
       orbitPos[note.id][move.id] = { x: left, y: top + MOVE_H / 2 };
-      const pill = buildOrbitPill(note, move, usedMoveIds.has(move.id), dimmed);
+      // While this response is the keyboard selection, each pill carries a 1-based
+      // number so the number-key binding teaches itself (the badge is built inside
+      // buildOrbitPill). The index is also how a number keypress finds its pill.
+      const selected = note.id === selectedId;
+      const pill = buildOrbitPill(note, move, usedMoveIds.has(move.id), dimmed, i + 1, selected);
       pill.style.left = `${left}px`;
       pill.style.top = `${top}px`;
       pill.dataset.resp = note.id;       // so a dragged response can carry its pills
       pill.dataset.move = move.id;
+      pill.dataset.pillIndex = i + 1;    // 1-based; matched by the number-key handler
       attachPillDrag(pill, note.id, move.id);
       layer.appendChild(pill);
     });
@@ -1251,14 +1440,23 @@ function attachPillDrag(pill, responseId, moveId) {
 
 // One orbit pill. Non-input moves fork on click; needsInput moves toggle a tiny
 // inline input (Enter submits, Esc cancels); the ask pill opens the reply path.
-function buildOrbitPill(note, move, spent, dimmed) {
+function buildOrbitPill(note, move, spent, dimmed, index, selected) {
   const pill = document.createElement("div");
   pill.className = "orbit-move" + (move.ask ? " ask" : "") + (move.breakout ? " breakout" : "")
     + (spent ? " spent" : "") + (dimmed ? " dimmed" : "");
 
   const label = document.createElement("button");
   label.className = "orbit-label";
-  label.textContent = move.label;
+  // Number badge — only while the parent response is the keyboard selection, and
+  // only for the first nine pills (the keys we bind). Self-teaches "press N".
+  if (selected && index <= 9) {
+    const num = document.createElement("span");
+    num.className = "pill-num";
+    num.textContent = index;
+    num.setAttribute("aria-hidden", "true"); // decorative; the label carries meaning
+    label.appendChild(num);
+  }
+  label.appendChild(document.createTextNode(move.label));
   pill.appendChild(label);
 
   if (!move.needsInput) {
@@ -1362,6 +1560,18 @@ function attachFocusClick(el, groupId) {
     if (activeGroupId === groupId) return;
     activeGroupId = groupId;
     renderAll();
+  });
+}
+
+// Click a card to make it the keyboard selection (the .selected ring + the node
+// arrow keys / number keys act on). Ignores drag-releases and clicks on the
+// card's own controls so normal editing is untouched.
+function attachSelectClick(el, id) {
+  el.addEventListener("click", (e) => {
+    if (wasDragging) return;
+    if (e.target.closest("button, textarea, input, select, .resize-handle")) return;
+    if (selectedId === id) return;
+    selectNote(id);
   });
 }
 
@@ -1635,7 +1845,7 @@ document.getElementById("btn-tidy").addEventListener("click", tidyTree);
   // focus it), so you don't have to travel to the toolbar to start a thought.
   // Ignored on cards/controls so double-clicking text/headers still behaves.
   container.addEventListener("dblclick", (e) => {
-    if (e.target.closest(".note, #zoom-ui, #empty-state, #coach-orbit, #board-menu")) return;
+    if (e.target.closest(".note, #zoom-ui, #empty-state, #coach-orbit, #coach-keys, #board-menu")) return;
     const r = container.getBoundingClientRect();
     const wx = (e.clientX - r.left - cam.x) / cam.k;
     const wy = (e.clientY - r.top - cam.y) / cam.k;
@@ -1666,12 +1876,44 @@ function addPromptAndFocus(at) {
   return note;
 }
 
-// Keyboard: + / − zoom around center, 0 fits all; n = new prompt, t = new text.
-// Ignored while typing or while a modal is open.
+// Keyboard map. View/create: + − zoom, 0 fit, n prompt, t text, ? shortcuts.
+// Tree navigation (on the current selection): arrows walk it, 1–9 fire the
+// selected response's orbit moves, Enter runs a selected prompt, Del removes it,
+// Esc deselects. Ignored while typing in a field or behind an open modal.
 window.addEventListener("keydown", (e) => {
   if (e.target.tagName === "INPUT" || e.target.tagName === "TEXTAREA") return;
   if (!modalEls.overlay.hidden) return; // don't act behind an open dialog
   if (e.metaKey || e.ctrlKey || e.altKey) return; // leave browser/OS combos alone
+
+  // ? toggles the keyboard cheat-sheet (Shift+/). Works any time.
+  if (e.key === "?") { e.preventDefault(); toggleKeysCoach(); return; }
+
+  // Arrow keys walk the thought-tree from the current selection.
+  const arrows = { ArrowRight: "right", ArrowLeft: "left", ArrowUp: "up", ArrowDown: "down" };
+  if (e.key in arrows) { e.preventDefault(); dismissKeysCoach(); navigate(arrows[e.key]); return; }
+
+  // 1–9 fire the selected response's orbit moves.
+  if (selectedId && e.key >= "1" && e.key <= "9") {
+    e.preventDefault(); dismissKeysCoach(); fireOrbitByNumber(Number(e.key)); return;
+  }
+
+  // Enter runs a selected ROOT prompt (clicks its Run button, reusing the build).
+  if (e.key === "Enter" && selectedId) {
+    const sel = notes.find((n) => n.id === selectedId);
+    if (sel && sel.type === "prompt") {
+      const runBtn = canvas.querySelector(`.note[data-id="${selectedId}"] .btn-run`);
+      if (runBtn) { e.preventDefault(); runBtn.click(); return; }
+    }
+  }
+
+  // Del / Backspace soft-deletes the selected node (undoable).
+  if ((e.key === "Delete" || e.key === "Backspace") && selectedId) {
+    e.preventDefault(); deleteNote(selectedId); return;
+  }
+
+  // Esc clears the selection.
+  if (e.key === "Escape" && selectedId) { selectedId = null; renderAll(); return; }
+
   if (e.key === "+" || e.key === "=") {
     const c = viewportCenter();
     zoomAt(c.x, c.y, cam.k * 1.25);
@@ -1687,6 +1929,15 @@ window.addEventListener("keydown", (e) => {
     e.preventDefault();
     addNote("text");
     renderAll();
+  } else if (e.key === "f" || e.key === "F") {
+    // Toggle focus mode — reuse the toolbar button's own handler so the active
+    // state, aria-pressed, and group pre-selection all stay in one place.
+    e.preventDefault();
+    document.getElementById("btn-focus").click();
+  } else if (e.key === "a" || e.key === "A") {
+    // Tidy / arrange the trees (the ✦ button) — "a" for arrange (t is text note).
+    e.preventDefault();
+    tidyTree();
   }
 });
 

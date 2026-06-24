@@ -42,7 +42,7 @@
         </p>
         <button id="empty-add-prompt" type="button">+ prompt note</button>
         <p class="empty-hint">
-          or press <kbd>N</kbd> · double&#8209;click anywhere · drag to pan · <kbd>0</kbd> to fit
+          or press <kbd>N</kbd> · double&#8209;click anywhere · drag to pan · <kbd>0</kbd> to fit · <kbd>?</kbd> for keyboard shortcuts
         </p>
       </div>
     </div>
@@ -55,6 +55,21 @@
         Click one to dig into the answer — that's how you go down the rabbit&#8209;hole.
       </p>
       <button id="coach-dismiss" type="button" aria-label="Got it, dismiss this tip">got it</button>
+    </div>
+    <!-- Keyboard cheat-sheet: shown once the first time a card is selected, and
+         re-openable any time with the ? key. Teaches the tree-walking bindings.
+         View-only, never saved to a board. -->
+    <div id="coach-keys" hidden role="status">
+      <p class="coach-keys-head"><strong>Keyboard</strong> <span class="coach-keys-sub">(press <kbd>?</kbd> any time)</span></p>
+      <ul class="coach-keys-list">
+        <li><kbd>←</kbd><kbd>→</kbd><kbd>↑</kbd><kbd>↓</kbd> walk the tree</li>
+        <li><kbd>1</kbd>–<kbd>9</kbd> fire the numbered explore pills</li>
+        <li><kbd>Enter</kbd> run a selected prompt</li>
+        <li><kbd>Del</kbd> remove · <kbd>Esc</kbd> deselect</li>
+        <li><kbd>N</kbd> new note · <kbd>F</kbd> focus mode</li>
+        <li><kbd>A</kbd> tidy · <kbd>0</kbd> fit · <kbd>+</kbd><kbd>−</kbd> zoom</li>
+      </ul>
+      <button id="coach-keys-dismiss" type="button" aria-label="Got it, dismiss the keyboard tips">got it</button>
     </div>
     <div id="zoom-ui" role="group" aria-label="Zoom controls">
       <button id="zoom-in" title="Zoom in (+)" aria-label="Zoom in">+</button>

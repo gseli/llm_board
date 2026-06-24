@@ -721,6 +721,94 @@ body.tidying #orbits .orbit-move {
 }
 .orbit-move .orbit-input::placeholder { color: rgba(90,79,58,0.5); font-style: italic; }
 
+/* Number badge on a pill while its response is the keyboard selection — teaches
+   "press N to fire this". Mono, accent, sits just before the label text. */
+.pill-num {
+  display: inline-block;
+  min-width: 1.1em;
+  margin-right: 5px;
+  font-weight: 700;
+  color: var(--accent);
+}
+.orbit-move .orbit-label:hover .pill-num { color: var(--paper); }
+.orbit-move.breakout .orbit-label .pill-num { color: #2e6b6b; }
+.orbit-move.breakout .orbit-label:hover .pill-num { color: var(--paper); }
+
+/* ── Keyboard selection ring ── */
+/* The current keyboard selection. A hard two-tone ring in the paper language
+   (outline, not box-shadow, so the card's own drop shadow is preserved). Mirrors
+   the :focus-visible rules; response cards switch to the terminal accent so the
+   ring reads on the dark surface. */
+.note.selected { outline: 2px solid var(--accent); outline-offset: 3px; }
+.note-response.selected { outline-color: var(--terminal-accent); }
+
+/* ── Keyboard cheat-sheet (#coach-keys) ── */
+/* Same terminal-card language as #coach-orbit, anchored bottom-centre so it never
+   covers the selected card up top. First-run once, then re-openable with ?. */
+#coach-keys {
+  position: absolute;
+  bottom: 18px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 46;
+  width: min(440px, 92vw);
+  background: var(--terminal-bg);
+  color: var(--terminal-ink);
+  border: 1.5px solid var(--ink);
+  box-shadow: 4px 4px 0 var(--ink);
+  padding: 12px 16px;
+  animation: coach-keys-in 0.4s cubic-bezier(0.16, 0.84, 0.34, 1);
+}
+#coach-keys[hidden] { display: none; }
+@keyframes coach-keys-in {
+  from { opacity: 0; transform: translate(-50%, 8px); }
+  to   { opacity: 1; transform: translate(-50%, 0); }
+}
+.coach-keys-head {
+  font-family: 'Source Code Pro', monospace;
+  font-size: 0.78rem;
+  margin-bottom: 8px;
+}
+.coach-keys-head strong { color: var(--terminal-accent); font-weight: 600; }
+.coach-keys-sub { color: var(--terminal-dim); font-size: 0.7rem; }
+.coach-keys-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 4px 18px;
+  font-family: 'Source Code Pro', monospace;
+  font-size: 0.72rem;
+  line-height: 1.6;
+  color: var(--terminal-dim);
+}
+#coach-keys kbd {
+  font-family: 'Source Code Pro', monospace;
+  font-size: 0.66rem;
+  background: rgba(212,200,150,0.12);
+  border: 1px solid var(--terminal-dim);
+  border-radius: 2px;
+  padding: 0 4px;
+  margin-right: 2px;
+  color: var(--terminal-ink);
+}
+#coach-keys-dismiss {
+  margin-top: 10px;
+  font-family: 'Source Code Pro', monospace;
+  font-size: 0.66rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  padding: 5px 11px;
+  background: transparent;
+  color: var(--terminal-ink);
+  border: 1.5px solid var(--terminal-dim);
+  cursor: pointer;
+  transition: background 0.12s, color 0.12s;
+}
+#coach-keys-dismiss:hover { background: var(--terminal-accent); color: var(--terminal-bg); border-color: var(--terminal-accent); }
+
 /* Focus mode: non-active groups dim to the background but stay clickable, so a
    click brings one into focus. Their internal controls are guarded in JS
    (attachFocusClick) so a dimmed card is selectable but not operable. */
